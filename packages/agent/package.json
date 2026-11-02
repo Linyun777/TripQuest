@@ -1,0 +1,52 @@
+{
+  "name": "@tripquest/agent",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./live": "./src/live.ts",
+    "./day-planning": "./src/day-index.ts",
+    "./day-live": "./src/day-live.ts",
+    "./replanning": "./src/replan-index.ts",
+    "./replan-live": "./src/replan-live.ts",
+    "./chat": "./src/chat-index.ts",
+    "./chat-live": "./src/chat-live.ts",
+    "./short": "./src/short-index.ts",
+    "./short-live": "./src/short-live.ts",
+    "./notes": "./src/notes-index.ts",
+    "./notes-live": "./src/notes-live.ts",
+    "./intent": "./src/intent.ts",
+    "./intent-live": "./src/intent-live.ts",
+    "./intent-embedding": "./src/intent-embedding.ts",
+    "./jev": "./src/jev.ts",
+    "./intent-jev": "./src/intent-jev.ts",
+    "./short-jev": "./src/short-jev.ts",
+    "./chat-summary": "./src/chat-summary.ts",
+    "./outing-allocate": "./src/outing-allocate.ts",
+    "./outing-generate": "./src/outing-generate.ts",
+    "./outing-change": "./src/outing-change.ts",
+    "./outing-graph": "./src/outing-graph.ts",
+    "./outing-lodging": "./src/outing-lodging.ts",
+    "./outing-review": "./src/outing-review.ts",
+    "./outing-review-live": "./src/outing-review-live.ts",
+    "./runs": "./src/runs.ts",
+    "./agents": "./src/agents/registry.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@tripquest/application": "workspace:*",
+    "@tripquest/domain": "workspace:*",
+    "@tripquest/providers": "workspace:*",
+    "@langchain/langgraph": "1.4.18",
+    "@langchain/core": "1.2.13",
+    "@langchain/openai": "1.6.0",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@types/node": "24.13.5"
+  }
+}

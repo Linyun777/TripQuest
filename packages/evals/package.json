@@ -1,0 +1,25 @@
+{
+  "name": "@tripquest/evals",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "eval:baseline": "vite build && node dist/cli.js",
+    "eval:agent": "vite build --config vite.agent.config.ts && node dist-agent/agent-cli.js",
+    "eval:feedback": "vite build --config vite.feedback.config.ts && node dist-feedback/feedback-cli.js",
+    "agent:demo": "vite build --config vite.feedback.config.ts && node dist-feedback/feedback-cli.js demo",
+    "eval:planning": "vite build --config vite.planning.config.ts && node dist-planning/planning-cli.js",
+    "eval:v21": "vite build --config vite.v21.config.ts && node dist-v21/v21-cli.js"
+  },
+  "dependencies": {
+    "@tripquest/application": "workspace:*",
+    "@tripquest/domain": "workspace:*",
+    "@tripquest/providers": "workspace:*",
+    "@tripquest/agent": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "24.13.5"
+  }
+}

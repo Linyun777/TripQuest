@@ -1,0 +1,186 @@
+@import "tailwindcss";
+
+/*
+ * V2.1 design tokens. One deep lake green carries actions and the brand; a warm sunset
+ * accent marks what the agent is doing right now. Everything else is ink on warm paper.
+ */
+@theme {
+  --font-sans: "PingFang SC", "HarmonyOS Sans SC", "Microsoft YaHei", ui-sans-serif, system-ui, sans-serif;
+  /* 标题用宋体，日常和出游一样（V2.12 验收时用户定）；正文还是上面的黑体。 */
+  --font-heading: "Songti SC", "Noto Serif SC", "Source Han Serif SC", "STSong", serif;
+
+  --color-paper: #f6f4ef;
+  --color-surface: #ffffff;
+  --color-sunken: #efece5;
+  --color-line: #e4e0d7;
+  --color-line-strong: #cfc9bc;
+
+  --color-ink: #17211d;
+  --color-ink-soft: #4a5751;
+  --color-ink-faint: #7f8a84;
+
+  --color-lake-50: #eef6f3;
+  --color-lake-100: #d6ebe3;
+  --color-lake-200: #acd5c6;
+  --color-lake-500: #2f8a6f;
+  --color-lake-600: #1f7159;
+  --color-lake-700: #175a47;
+  --color-lake-900: #0d3429;
+
+  --color-sun-50: #fdf3ea;
+  --color-sun-100: #fae0c8;
+  --color-sun-500: #e07b39;
+  --color-sun-700: #a9521c;
+
+  --color-rain-50: #eef3fb;
+  --color-rain-500: #4d78b8;
+
+  --color-danger-50: #fbefec;
+  --color-danger-600: #b2402c;
+
+  --radius-card: 1.25rem;
+  --radius-field: 0.875rem;
+
+  --shadow-card: 0 1px 2px rgb(23 33 29 / 0.04), 0 8px 24px -12px rgb(23 33 29 / 0.14);
+  --shadow-float: 0 2px 6px rgb(23 33 29 / 0.06), 0 24px 48px -20px rgb(23 33 29 / 0.28);
+
+  --ease-out-soft: cubic-bezier(0.22, 1, 0.36, 1);
+  /* iOS-like drawer curve: sheets slide in and out with it. */
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+:root {
+  color-scheme: light;
+}
+
+/*
+ * V2.11 出游主题（用户定的暖色旅行感）：沙色纸面、赤陶主色、琥珀色提醒。只换变量，组件不分叉；
+ * 字体两种模式一样，出游只换颜色。
+ * 出游的页面在外层加 data-mode="outing"。lake-* 是“主色”的名字，出游里换成赤陶色。
+ */
+/* 弹层渲染在页面外层之外（挂在 body 上），body 跟着页面里的出游区域一起换变量。 */
+[data-mode="outing"],
+body:has([data-mode="outing"]) {
+  --color-paper: #f7efe4;
+  --color-surface: #fffaf3;
+  --color-sunken: #f0e5d6;
+  --color-line: #e8dccb;
+  --color-line-strong: #d6c5ae;
+
+  --color-ink: #2a1f17;
+  --color-ink-soft: #5c4a3c;
+  --color-ink-faint: #8a7766;
+
+  --color-lake-50: #fbefe7;
+  --color-lake-100: #f5d9c7;
+  --color-lake-200: #ebb79a;
+  --color-lake-500: #c8643a;
+  --color-lake-600: #b0532d;
+  --color-lake-700: #8c4023;
+  --color-lake-900: #4f230f;
+
+  --color-sun-50: #fbf3dc;
+  --color-sun-100: #f5e2a8;
+  --color-sun-500: #c99a1e;
+  --color-sun-700: #85600c;
+}
+
+/* 页面外层之外（滚动回弹露出的部分）也用出游的纸色。 */
+body:has([data-mode="outing"]) {
+  background: #f7efe4;
+}
+
+body {
+  margin: 0;
+  background: var(--color-paper);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* 宋体字距收紧会挤，标题不跟 tracking-tight。 */
+h1,
+h2,
+h3 {
+  font-family: var(--font-heading);
+  letter-spacing: 0;
+}
+
+/* Times and minutes line up in timelines and cards. */
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+.journey-input {
+  width: 100%;
+  min-height: 48px;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-field);
+  background: var(--color-surface);
+  padding: 0 16px;
+  color: var(--color-ink);
+  font-size: 16px;
+}
+
+.journey-input:focus-visible {
+  outline: 2px solid var(--color-lake-600);
+  outline-offset: 2px;
+}
+
+.journey-input[aria-invalid="true"] {
+  border-color: var(--color-danger-600);
+}
+
+/* The "agent is working" shimmer on progress steps. */
+@keyframes shimmer {
+  from { background-position: 200% 0; }
+  to { background-position: -200% 0; }
+}
+
+.shimmer-text {
+  background: linear-gradient(90deg, var(--color-ink-soft) 0%, var(--color-sun-500) 50%, var(--color-ink-soft) 100%);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: shimmer 2.4s linear infinite;
+}
+
+/* Bottom sheet enter/exit (Radix sets data-state on open and close). */
+@keyframes sheet-up {
+  from { transform: translateY(100%); }
+  to { transform: translateY(0); }
+}
+@keyframes sheet-down {
+  from { transform: translateY(0); }
+  to { transform: translateY(100%); }
+}
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes fade-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+/* Closing answers the user at once: the same drawer curve, faster than opening, never ease-in. */
+.sheet-content[data-state="open"] { animation: sheet-up 380ms var(--ease-drawer); }
+.sheet-content[data-state="closed"] { animation: sheet-down 200ms var(--ease-drawer); }
+.sheet-overlay[data-state="open"] { animation: fade-in 240ms var(--ease-out-soft); }
+.sheet-overlay[data-state="closed"] { animation: fade-out 200ms var(--ease-out-soft); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    /* A looping animation squeezed to 0.01ms shows a random frame each paint: play it once. */
+    animation-iteration-count: 1 !important;
+  }
+  .shimmer-text {
+    animation: none;
+    color: var(--color-ink-soft);
+    background: none;
+  }
+}

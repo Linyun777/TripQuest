@@ -1,0 +1,51 @@
+{
+  "name": "tripquest",
+  "private": true,
+  "packageManager": "pnpm@12.3.4",
+  "engines": {
+    "node": "^24.0.0 || >=26.0.0"
+  },
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "dev:https": "node scripts/dev.mjs --https",
+    "dev:web": "pnpm --filter @tripquest/web dev",
+    "db:up": "docker compose up -d --wait postgres",
+    "db:down": "docker compose down",
+    "db:status": "docker compose ps",
+    "db:logs": "docker compose logs -f postgres",
+    "db:generate": "pnpm --filter @tripquest/db db:generate",
+    "db:migrate": "pnpm --filter @tripquest/db db:migrate",
+    "typecheck": "pnpm --filter @tripquest/domain typecheck && pnpm --filter @tripquest/application typecheck && pnpm --filter @tripquest/providers typecheck && pnpm --filter @tripquest/db typecheck && pnpm --filter @tripquest/auth typecheck && pnpm --filter @tripquest/web typecheck && pnpm --filter @tripquest/evals typecheck && pnpm --filter @tripquest/agent typecheck && pnpm --filter @tripquest/worker typecheck && pnpm --filter @tripquest/rag typecheck",
+    "lint": "eslint apps/web apps/worker packages/application packages/db packages/auth packages/domain packages/providers packages/evals packages/agent packages/rag",
+    "test:application": "pnpm --filter @tripquest/application test",
+    "test:db": "pnpm --filter @tripquest/db test",
+    "test:domain": "pnpm --filter @tripquest/domain test",
+    "test:providers": "pnpm --filter @tripquest/providers test",
+    "test:web": "pnpm --filter @tripquest/web test",
+    "build": "pnpm --filter @tripquest/web build",
+    "eval:baseline": "pnpm --filter @tripquest/evals eval:baseline",
+    "test:evals": "pnpm --filter @tripquest/evals test",
+    "test:agent": "pnpm --filter @tripquest/agent test",
+    "eval:agent": "pnpm --filter @tripquest/evals eval:agent",
+    "eval:feedback": "pnpm --filter @tripquest/evals eval:feedback",
+    "agent:demo": "pnpm --filter @tripquest/evals agent:demo",
+    "eval:planning": "pnpm --filter @tripquest/evals eval:planning",
+    "real-places:purge": "node packages/db/scripts/purge-real-days.mjs",
+    "trace": "node packages/db/scripts/trace.mjs",
+    "worker": "pnpm --filter @tripquest/worker build && node --env-file-if-exists=.env apps/worker/dist/worker.js",
+    "test:worker": "pnpm --filter @tripquest/worker test",
+    "eval:v21": "pnpm --filter @tripquest/evals eval:v21",
+    "test:rag": "pnpm --filter @tripquest/rag test",
+    "rag": "pnpm --filter @tripquest/rag rag",
+    "rag:ingest": "pnpm --filter @tripquest/rag rag ingest",
+    "users": "pnpm --filter @tripquest/auth build && node packages/auth/dist/users.js",
+    "test:auth": "pnpm --filter @tripquest/auth test"
+  },
+  "devDependencies": {
+    "eslint": "9.39.5",
+    "eslint-config-next": "16.3.5",
+    "typescript": "5.9.3",
+    "vite": "8.3.0",
+    "vitest": "5.0.1"
+  }
+}

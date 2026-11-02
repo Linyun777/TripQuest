@@ -1,0 +1,128 @@
+{
+  "name": "@tripquest/application",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./planning": {
+      "types": "./src/planning-requirements.ts",
+      "default": "./src/planning-requirements.ts"
+    },
+    "./day-save-api": {
+      "types": "./src/day-save-api.ts",
+      "default": "./src/day-save-api.ts"
+    },
+    "./generated-day": {
+      "types": "./src/generated-day.ts",
+      "default": "./src/generated-day.ts"
+    },
+    "./day-confirmation": {
+      "types": "./src/day-confirmation.ts",
+      "default": "./src/day-confirmation.ts"
+    },
+    "./day-planning": {
+      "types": "./src/day-planning.ts",
+      "default": "./src/day-planning.ts"
+    },
+    "./saved-day": {
+      "types": "./src/saved-day.ts",
+      "default": "./src/saved-day.ts"
+    },
+    "./day-edit": {
+      "types": "./src/day-edit.ts",
+      "default": "./src/day-edit.ts"
+    },
+    "./day-state": {
+      "types": "./src/day-state.ts",
+      "default": "./src/day-state.ts"
+    },
+    "./day-progress": {
+      "types": "./src/day-progress.ts",
+      "default": "./src/day-progress.ts"
+    },
+    "./day-replan": {
+      "types": "./src/day-replan.ts",
+      "default": "./src/day-replan.ts"
+    },
+    "./day-replan-confirm": {
+      "types": "./src/day-replan-confirm.ts",
+      "default": "./src/day-replan-confirm.ts"
+    },
+    "./generated-day-read": {
+      "types": "./src/generated-day-read.ts",
+      "default": "./src/generated-day-read.ts"
+    },
+    "./day-replan-contract": {
+      "types": "./src/day-replan-contract.ts",
+      "default": "./src/day-replan-contract.ts"
+    },
+    "./planning-task": {
+      "types": "./src/planning-task.ts",
+      "default": "./src/planning-task.ts"
+    },
+    "./fingerprint": {
+      "types": "./src/fingerprint.ts",
+      "default": "./src/fingerprint.ts"
+    },
+    "./real-day": {
+      "types": "./src/real-day.ts",
+      "default": "./src/real-day.ts"
+    },
+    "./opening-hours": {
+      "types": "./src/opening-hours.ts",
+      "default": "./src/opening-hours.ts"
+    },
+    "./real-adjust": {
+      "types": "./src/real-adjust.ts",
+      "default": "./src/real-adjust.ts"
+    },
+    "./conversation": {
+      "types": "./src/conversation.ts",
+      "default": "./src/conversation.ts"
+    },
+    "./leg-choice": {
+      "types": "./src/leg-choice.ts",
+      "default": "./src/leg-choice.ts"
+    },
+    "./trip-notes": {
+      "types": "./src/trip-notes.ts",
+      "default": "./src/trip-notes.ts"
+    },
+    "./preferences": {
+      "types": "./src/preferences.ts",
+      "default": "./src/preferences.ts"
+    },
+    "./transfer-day": {
+      "types": "./src/transfer-day.ts",
+      "default": "./src/transfer-day.ts"
+    },
+    "./outing-review-contract": {
+      "types": "./src/outing-review-contract.ts",
+      "default": "./src/outing-review-contract.ts"
+    },
+    "./outing-allocation": {
+      "types": "./src/outing-allocation.ts",
+      "default": "./src/outing-allocation.ts"
+    },
+    "./outing-trip": {
+      "types": "./src/outing-trip.ts",
+      "default": "./src/outing-trip.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@tripquest/domain": "workspace:*",
+    "@tripquest/providers": "workspace:*",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.13"
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "name": "@tripquest/rag",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "build": "vite build",
+    "rag": "vite build && node --env-file-if-exists=../../.env dist/cli.js"
+  },
+  "dependencies": {
+    "@tripquest/db": "workspace:*",
+    "@tripquest/providers": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.13"
+  }
+}

@@ -1,0 +1,11 @@
+packages:
+  - "apps/*"
+  - "packages/*"
+allowBuilds:
+  esbuild@0.18.20: true
+  esbuild@0.25.12: true
+  esbuild@0.28.2: true
+  unrs-resolver@1.12.2: true
+minimumReleaseAgeExclude:
+  - drizzle-kit@0.31.11
+  - drizzle-orm@0.45.3

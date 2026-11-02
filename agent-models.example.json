@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "profiles": {
+    "deepseek-flash": {
+      "providerId": "deepseek",
+      "adapter": "chat_completions",
+      "baseURL": "https://api.deepseek.com",
+      "model": "deepseek-flash",
+      "apiKeyEnv": "DEEPSEEK_API_KEY",
+      "jsonMode": "json_object",
+      "thinkingMode": "disabled",
+      "temperature": 0,
+      "outputTokenLimit": 512
+    }
+  }
+}

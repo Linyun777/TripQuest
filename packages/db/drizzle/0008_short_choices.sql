@@ -1,0 +1,2 @@
+ALTER TABLE "conversation_messages" DROP CONSTRAINT "conversation_messages_kind_check";--> statement-breakpoint
+ALTER TABLE "conversation_messages" ADD CONSTRAINT "conversation_messages_kind_check" CHECK ("conversation_messages"."kind" in ('text', 'requirements_card', 'planning_progress', 'plan_card', 'notice', 'choices'));

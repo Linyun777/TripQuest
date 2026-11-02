@@ -1,0 +1,27 @@
+{
+  "name": "@tripquest/worker",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vite build",
+    "start": "node dist/worker.js",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@langchain/langgraph-checkpoint-postgres": "1.0.5",
+    "@tripquest/agent": "workspace:*",
+    "@tripquest/application": "workspace:*",
+    "@tripquest/db": "workspace:*",
+    "@tripquest/domain": "workspace:*",
+    "@tripquest/providers": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "24.13.5"
+  },
+  "exports": {
+    "./execute": "./src/execute.ts",
+    "./checkpointer": "./src/checkpointer.ts"
+  }
+}

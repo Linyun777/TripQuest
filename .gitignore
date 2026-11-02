@@ -1,0 +1,38 @@
+# Dependencies and build output
+node_modules/
+.pnpm-store/
+.next/
+out/
+build/
+dist/
+coverage/
+*.tsbuildinfo
+/packages/evals/dist-*/
+
+# Local configuration, secrets, certificates and data
+.env
+.env.*
+!.env.example
+agent-models.local.json
+.certificates/
+*.pem
+*.key
+*.p12
+*.pfx
+*.log
+*.jsonl
+*.dump
+*.sqlite
+*.sqlite3
+.DS_Store
+/eval-results/
+
+# Private collaboration material
+/docs/
+/notes/
+.agents/
+.codex/
+.claude/
+.workbuddy-ai/
+**/AGENTS.md
+**/CLAUDE.md

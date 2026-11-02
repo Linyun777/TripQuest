@@ -1,0 +1,30 @@
+{
+  "name": "@tripquest/db",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate"
+  },
+  "dependencies": {
+    "@tripquest/application": "workspace:*",
+    "@tripquest/domain": "workspace:*",
+    "drizzle-orm": "0.45.3",
+    "pg": "8.23.0"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.13",
+    "@types/pg": "8.23.1",
+    "dotenv": "18.0.1",
+    "drizzle-kit": "0.31.11"
+  }
+}

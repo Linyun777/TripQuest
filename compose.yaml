@@ -1,0 +1,33 @@
+name: tripquest-public
+
+services:
+  postgres:
+    # PostgreSQL 18 with pgvector; data is held in this project's named volume.
+    image: pgvector/pgvector:pg18
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-tripquest}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tripquest_local_dev}
+      POSTGRES_DB: ${POSTGRES_DB:-tripquest}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-55433}:5432"
+    volumes:
+      - type: volume
+        source: postgres-data
+        target: /var/lib/postgresql
+      - type: bind
+        source: ./packages/db/docker/init-test-database.sql
+        target: /docker-entrypoint-initdb.d/001-create-test-database.sql
+        read_only: true
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}",
+        ]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+      start_period: 5s
+
+volumes:
+  postgres-data:

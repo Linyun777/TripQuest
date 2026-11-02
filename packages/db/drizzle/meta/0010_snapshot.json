@@ -1,0 +1,1885 @@
+{
+  "id": "6f5889c1-308b-485e-ae49-617b818cc1b8",
+  "prevId": "0d689af2-b96a-4b17-8a21-92736872b03d",
+  "version": "7",
+  "dialect": "postgresql",
+  "tables": {
+    "public.conversation_messages": {
+      "name": "conversation_messages",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "conversation_id": {
+          "name": "conversation_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "seq": {
+          "name": "seq",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "role": {
+          "name": "role",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "body": {
+          "name": "body",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp (0) with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "conversation_messages_conversation_id_conversations_id_fk": {
+          "name": "conversation_messages_conversation_id_conversations_id_fk",
+          "tableFrom": "conversation_messages",
+          "tableTo": "conversations",
+          "columnsFrom": [
+            "conversation_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "conversation_messages_seq_unique": {
+          "name": "conversation_messages_seq_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "conversation_id",
+            "seq"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "conversation_messages_seq_check": {
+          "name": "conversation_messages_seq_check",
+          "value": "\"conversation_messages\".\"seq\" > 0"
+        },
+        "conversation_messages_role_check": {
+          "name": "conversation_messages_role_check",
+          "value": "\"conversation_messages\".\"role\" in ('user', 'assistant')"
+        },
+        "conversation_messages_kind_check": {
+          "name": "conversation_messages_kind_check",
+          "value": "\"conversation_messages\".\"kind\" in ('text', 'requirements_card', 'planning_progress', 'plan_card', 'notice', 'choices', 'adjust_card')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.conversations": {
+      "name": "conversations",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "title": {
+          "name": "title",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'active'"
+        },
+        "journey_id": {
+          "name": "journey_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "draft": {
+          "name": "draft",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "message_count": {
+          "name": "message_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp (0) with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp (0) with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "conversations_updated_idx": {
+          "name": "conversations_updated_idx",
+          "columns": [
+            {
+              "expression": "updated_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "conversations_journey_id_journeys_id_fk": {
+          "name": "conversations_journey_id_journeys_id_fk",
+          "tableFrom": "conversations",
+          "tableTo": "journeys",
+          "columnsFrom": [
+            "journey_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "conversations_title_length_check": {
+          "name": "conversations_title_length_check",
+          "value": "\"conversations\".\"title\" = btrim(\"conversations\".\"title\") and char_length(\"conversations\".\"title\") between 1 and 80"
+        },
+        "conversations_status_check": {
+          "name": "conversations_status_check",
+          "value": "\"conversations\".\"status\" in ('active', 'planned', 'archived')"
+        },
+        "conversations_message_count_check": {
+          "name": "conversations_message_count_check",
+          "value": "\"conversations\".\"message_count\" >= 0"
+        },
+        "conversations_updated_at_check": {
+          "name": "conversations_updated_at_check",
+          "value": "\"conversations\".\"updated_at\" >= \"conversations\".\"created_at\""
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.day_plan_details": {
+      "name": "day_plan_details",
+      "schema": "",
+      "columns": {
+        "journey_id": {
+          "name": "journey_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "plan_version": {
+          "name": "plan_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "details": {
+          "name": "details",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "day_plan_details_plan_version_fk": {
+          "name": "day_plan_details_plan_version_fk",
+          "tableFrom": "day_plan_details",
+          "tableTo": "plan_versions",
+          "columnsFrom": [
+            "journey_id",
+            "plan_version"
+          ],
+          "columnsTo": [
+            "journey_id",
+            "version"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "day_plan_details_pkey": {
+          "name": "day_plan_details_pkey",
+          "columns": [
+            "journey_id",
+            "plan_version"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "day_plan_details_version_check": {
+          "name": "day_plan_details_version_check",
+          "value": "\"day_plan_details\".\"plan_version\" > 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.generated_day_edit_confirmations": {
+      "name": "generated_day_edit_confirmations",
+      "schema": "",
+      "columns": {
+        "journey_id": {
+          "name": "journey_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "edit_id": {
+          "name": "edit_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "intent_fingerprint": {
+          "name": "intent_fingerprint",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "base_plan_version": {
+          "name": "base_plan_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "base_observation_version": {
+          "name": "base_observation_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "result_plan_version": {
+          "name": "result_plan_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "change": {
+          "name": "change",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "candidate_fingerprint": {
+          "name": "candidate_fingerprint",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "confirmed_at": {
+          "name": "confirmed_at",
+          "type": "timestamp (0) with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "generated_day_edit_confirmations_journey_id_journeys_id_fk": {
+          "name": "generated_day_edit_confirmations_journey_id_journeys_id_fk",
+          "tableFrom": "generated_day_edit_confirmations",
+          "tableTo": "journeys",
+          "columnsFrom": [
+            "journey_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "generated_day_edits_base_plan_fk": {
+          "name": "generated_day_edits_base_plan_fk",
+          "tableFrom": "generated_day_edit_confirmations",
+          "tableTo": "plan_versions",
+          "columnsFrom": [
+            "journey_id",
+            "base_plan_version"
+          ],
+          "columnsTo": [
+            "journey_id",
+            "version"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "generated_day_edits_result_plan_fk": {
+          "name": "generated_day_edits_result_plan_fk",
+          "tableFrom": "generated_day_edit_confirmations",
+          "tableTo": "plan_versions",
+          "columnsFrom": [
+            "journey_id",
+            "result_plan_version"
+          ],
+          "columnsTo": [
+            "journey_id",
+            "version"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "generated_day_edit_confirmations_pkey": {
+          "name": "generated_day_edit_confirmations_pkey",
+          "columns": [
+            "journey_id",
+            "edit_id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "generated_day_edits_versions_check": {
+          "name": "generated_day_edits_versions_check",
+          "value": "\n    \"generated_day_edit_confirmations\".\"base_plan_version\" > 0 and \"generated_day_edit_confirmations\".\"base_observation_version\" = 0\n    and \"generated_day_edit_confirmations\".\"result_plan_version\" = \"generated_day_edit_confirmations\".\"base_plan_version\" + 1\n  "
+        },
+        "generated_day_edits_fingerprints_check": {
+          "name": "generated_day_edits_fingerprints_check",
+          "value": "\n    \"generated_day_edit_confirmations\".\"intent_fingerprint\" ~ '^[a-f0-9]{64}$' and \"generated_day_edit_confirmations\".\"candidate_fingerprint\" ~ '^[a-f0-9]{64}$'\n  "
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.generated_day_progress": {
+      "name": "generated_day_progress",
+      "schema": "",
+      "columns": {
+        "journey_id": {
+          "name": "journey_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "version": {
+          "name": "version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "previous_version": {
+          "name": "previous_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "base_plan_version": {
+          "name": "base_plan_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "report_id": {
+          "name": "report_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "intent_fingerprint": {
+          "name": "intent_fingerprint",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "observed_at": {
+          "name": "observed_at",
+          "type": "timestamp (0) with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "earliest_resume_at": {
+          "name": "earliest_resume_at",
+          "type": "timestamp (0) with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "completed_activity_ids": {
+          "name": "completed_activity_ids",
+          "type": "uuid[]",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "skipped_activity_ids": {
+          "name": "skipped_activity_ids",
+          "type": "uuid[]",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "location_place_id": {
+          "name": "location_place_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "source": {
+          "name": "source",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "recorded_at": {
+          "name": "recorded_at",
+          "type": "timestamp (0) with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "generated_day_progress_journey_id_journeys_id_fk": {
+          "name": "generated_day_progress_journey_id_journeys_id_fk",
+          "tableFrom": "generated_day_progress",
+          "tableTo": "journeys",
+          "columnsFrom": [
+            "journey_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "generated_day_progress_base_plan_fk": {
+          "name": "generated_day_progress_base_plan_fk",
+          "tableFrom": "generated_day_progress",
+          "tableTo": "plan_versions",
+          "columnsFrom": [
+            "journey_id",
+            "base_plan_version"
+          ],
+          "columnsTo": [
+            "journey_id",
+            "version"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "generated_day_progress_pkey": {
+          "name": "generated_day_progress_pkey",
+          "columns": [
+            "journey_id",
+            "version"
+          ]
+        }
+      },
+      "uniqueConstraints": {
+        "generated_day_progress_report_unique": {
+          "name": "generated_day_progress_report_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "journey_id",
+            "report_id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "generated_day_progress_versions_check": {
+          "name": "generated_day_progress_versions_check",
+          "value": "\"generated_day_progress\".\"version\" > 0 and \"generated_day_progress\".\"previous_version\" = \"generated_day_progress\".\"version\" - 1 and \"generated_day_progress\".\"base_plan_version\" > 0"
+        },
+        "generated_day_progress_times_check": {
+          "name": "generated_day_progress_times_check",
+          "value": "\"generated_day_progress\".\"earliest_resume_at\" >= \"generated_day_progress\".\"observed_at\""
+        },
+        "generated_day_progress_sets_check": {
+          "name": "generated_day_progress_sets_check",
+          "value": "cardinality(\"generated_day_progress\".\"completed_activity_ids\") <= 6 and cardinality(\"generated_day_progress\".\"skipped_activity_ids\") <= 6\n        and not (\"generated_day_progress\".\"completed_activity_ids\" && \"generated_day_progress\".\"skipped_activity_ids\")"
+        },
+        "generated_day_progress_source_check": {
+          "name": "generated_day_progress_source_check",
+          "value": "\"generated_day_progress\".\"source\" = 'user_reported'"
+        },
+        "generated_day_progress_fingerprint_check": {
+          "name": "generated_day_progress_fingerprint_check",
+          "value": "\"generated_day_progress\".\"intent_fingerprint\" ~ '^[a-f0-9]{64}$'"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.generated_day_replan_confirmations": {
+      "name": "generated_day_replan_confirmations",
+      "schema": "",
+      "columns": {
+        "journey_id": {
+          "name": "journey_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "run_id": {
+          "name": "run_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "intent_fingerprint": {
+          "name": "intent_fingerprint",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "base_plan_version": {
+          "name": "base_plan_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "base_observation_version": {
+          "name": "base_observation_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "result_plan_version": {
+          "name": "result_plan_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "confirmed_at": {
+          "name": "confirmed_at",
+          "type": "timestamp (0) with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "generated_day_replan_confirmations_journey_id_journeys_id_fk": {
+          "name": "generated_day_replan_confirmations_journey_id_journeys_id_fk",
+          "tableFrom": "generated_day_replan_confirmations",
+          "tableTo": "journeys",
+          "columnsFrom": [
+            "journey_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "generated_day_replans_base_plan_fk": {
+          "name": "generated_day_replans_base_plan_fk",
+          "tableFrom": "generated_day_replan_confirmations",
+          "tableTo": "plan_versions",
+          "columnsFrom": [
+            "journey_id",
+            "base_plan_version"
+          ],
+          "columnsTo": [
+            "journey_id",
+            "version"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "generated_day_replans_result_plan_fk": {
+          "name": "generated_day_replans_result_plan_fk",
+          "tableFrom": "generated_day_replan_confirmations",
+          "tableTo": "plan_versions",
+          "columnsFrom": [
+            "journey_id",
+            "result_plan_version"
+          ],
+          "columnsTo": [
+            "journey_id",
+            "version"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "generated_day_replans_base_progress_fk": {
+          "name": "generated_day_replans_base_progress_fk",
+          "tableFrom": "generated_day_replan_confirmations",
+          "tableTo": "generated_day_progress",
+          "columnsFrom": [
+            "journey_id",
+            "base_observation_version"
+          ],
+          "columnsTo": [
+            "journey_id",
+            "version"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "generated_day_replan_confirmations_pkey": {
+          "name": "generated_day_replan_confirmations_pkey",
+          "columns": [
+            "journey_id",
+            "run_id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "generated_day_replans_versions_check": {
+          "name": "generated_day_replans_versions_check",
+          "value": "\"generated_day_replan_confirmations\".\"base_plan_version\" > 0 and \"generated_day_replan_confirmations\".\"base_observation_version\" > 0\n        and \"generated_day_replan_confirmations\".\"result_plan_version\" = \"generated_day_replan_confirmations\".\"base_plan_version\" + 1"
+        },
+        "generated_day_replans_fingerprint_check": {
+          "name": "generated_day_replans_fingerprint_check",
+          "value": "\"generated_day_replan_confirmations\".\"intent_fingerprint\" ~ '^[a-f0-9]{64}$'"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.journey_observations": {
+      "name": "journey_observations",
+      "schema": "",
+      "columns": {
+        "journey_id": {
+          "name": "journey_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "version": {
+          "name": "version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "observed_at": {
+          "name": "observed_at",
+          "type": "timestamp (0) with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "completed_activity_ids": {
+          "name": "completed_activity_ids",
+          "type": "uuid[]",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "skipped_activity_ids": {
+          "name": "skipped_activity_ids",
+          "type": "uuid[]",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "current_activity_id": {
+          "name": "current_activity_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "location_place_id": {
+          "name": "location_place_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source": {
+          "name": "source",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "recorded_at": {
+          "name": "recorded_at",
+          "type": "timestamp (0) with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "journey_observations_journey_id_journeys_id_fk": {
+          "name": "journey_observations_journey_id_journeys_id_fk",
+          "tableFrom": "journey_observations",
+          "tableTo": "journeys",
+          "columnsFrom": [
+            "journey_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "journey_observations_pkey": {
+          "name": "journey_observations_pkey",
+          "columns": [
+            "journey_id",
+            "version"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "journey_observations_version_check": {
+          "name": "journey_observations_version_check",
+          "value": "\"journey_observations\".\"version\" > 0"
+        },
+        "journey_observations_source_check": {
+          "name": "journey_observations_source_check",
+          "value": "\"journey_observations\".\"source\" = 'user_reported'"
+        },
+        "journey_observations_current_activity_check": {
+          "name": "journey_observations_current_activity_check",
+          "value": "\"journey_observations\".\"current_activity_id\" is null"
+        },
+        "journey_observations_skipped_check": {
+          "name": "journey_observations_skipped_check",
+          "value": "cardinality(\"journey_observations\".\"skipped_activity_ids\") = 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.journeys": {
+      "name": "journeys",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "title": {
+          "name": "title",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "creation_kind": {
+          "name": "creation_kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'manual'"
+        },
+        "creation_run_id": {
+          "name": "creation_run_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "creation_intent_fingerprint": {
+          "name": "creation_intent_fingerprint",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "date": {
+          "name": "date",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "time_zone": {
+          "name": "time_zone",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp (0) with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp (0) with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "current_observation_version": {
+          "name": "current_observation_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "journeys_creation_run_id_unique": {
+          "name": "journeys_creation_run_id_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "creation_run_id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "journeys_title_length_check": {
+          "name": "journeys_title_length_check",
+          "value": "\"journeys\".\"title\" = btrim(\"journeys\".\"title\") and char_length(\"journeys\".\"title\") between 1 and 80"
+        },
+        "journeys_time_zone_check": {
+          "name": "journeys_time_zone_check",
+          "value": "\"journeys\".\"time_zone\" = 'Asia/Shanghai'"
+        },
+        "journeys_updated_at_check": {
+          "name": "journeys_updated_at_check",
+          "value": "\"journeys\".\"updated_at\" >= \"journeys\".\"created_at\""
+        },
+        "journeys_observation_version_check": {
+          "name": "journeys_observation_version_check",
+          "value": "\"journeys\".\"current_observation_version\" >= 0"
+        },
+        "journeys_creation_identity_check": {
+          "name": "journeys_creation_identity_check",
+          "value": "\n      (\"journeys\".\"creation_kind\" = 'manual'\n        and \"journeys\".\"creation_run_id\" is null and \"journeys\".\"creation_intent_fingerprint\" is null)\n      or (\"journeys\".\"creation_kind\" in ('generated_day', 'real_day')\n        and \"journeys\".\"creation_run_id\" is not null\n        and \"journeys\".\"creation_intent_fingerprint\" is not null\n        and \"journeys\".\"creation_intent_fingerprint\" ~ '^[a-f0-9]{64}$')\n    "
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.knowledge_chunks": {
+      "name": "knowledge_chunks",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "document_id": {
+          "name": "document_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "seq": {
+          "name": "seq",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "heading_path": {
+          "name": "heading_path",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "body": {
+          "name": "body",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "embedding": {
+          "name": "embedding",
+          "type": "vector(1024)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "keywords": {
+          "name": "keywords",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "keyword_vector": {
+          "name": "keyword_vector",
+          "type": "tsvector",
+          "primaryKey": false,
+          "notNull": true,
+          "generated": {
+            "as": "to_tsvector('simple', keywords)",
+            "type": "stored"
+          }
+        }
+      },
+      "indexes": {
+        "knowledge_chunks_embedding_idx": {
+          "name": "knowledge_chunks_embedding_idx",
+          "columns": [
+            {
+              "expression": "embedding",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "vector_cosine_ops"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "hnsw",
+          "with": {}
+        },
+        "knowledge_chunks_keyword_idx": {
+          "name": "knowledge_chunks_keyword_idx",
+          "columns": [
+            {
+              "expression": "keyword_vector",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "gin",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "knowledge_chunks_document_id_knowledge_documents_id_fk": {
+          "name": "knowledge_chunks_document_id_knowledge_documents_id_fk",
+          "tableFrom": "knowledge_chunks",
+          "tableTo": "knowledge_documents",
+          "columnsFrom": [
+            "document_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "knowledge_chunks_seq_unique": {
+          "name": "knowledge_chunks_seq_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "document_id",
+            "seq"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "knowledge_chunks_seq_check": {
+          "name": "knowledge_chunks_seq_check",
+          "value": "\"knowledge_chunks\".\"seq\" >= 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.knowledge_documents": {
+      "name": "knowledge_documents",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "title": {
+          "name": "title",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "topic": {
+          "name": "topic",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "sources": {
+          "name": "sources",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "content_hash": {
+          "name": "content_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "ingested_at": {
+          "name": "ingested_at",
+          "type": "timestamp (0) with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "knowledge_documents_id_check": {
+          "name": "knowledge_documents_id_check",
+          "value": "\"knowledge_documents\".\"id\" ~ '^[a-z0-9-]{1,80}$'"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.plan_activities": {
+      "name": "plan_activities",
+      "schema": "",
+      "columns": {
+        "journey_id": {
+          "name": "journey_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "plan_version": {
+          "name": "plan_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "activity_id": {
+          "name": "activity_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "position": {
+          "name": "position",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "place_id": {
+          "name": "place_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "place_name": {
+          "name": "place_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "starts_at": {
+          "name": "starts_at",
+          "type": "timestamp (0) with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "ends_at": {
+          "name": "ends_at",
+          "type": "timestamp (0) with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "priority": {
+          "name": "priority",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "locked": {
+          "name": "locked",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "reservation_id": {
+          "name": "reservation_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "plan_activities_reservation_idx": {
+          "name": "plan_activities_reservation_idx",
+          "columns": [
+            {
+              "expression": "journey_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "reservation_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "plan_activities_plan_version_fkey": {
+          "name": "plan_activities_plan_version_fkey",
+          "tableFrom": "plan_activities",
+          "tableTo": "plan_versions",
+          "columnsFrom": [
+            "journey_id",
+            "plan_version"
+          ],
+          "columnsTo": [
+            "journey_id",
+            "version"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "plan_activities_reservation_fkey": {
+          "name": "plan_activities_reservation_fkey",
+          "tableFrom": "plan_activities",
+          "tableTo": "reservations",
+          "columnsFrom": [
+            "journey_id",
+            "reservation_id"
+          ],
+          "columnsTo": [
+            "journey_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "plan_activities_pkey": {
+          "name": "plan_activities_pkey",
+          "columns": [
+            "journey_id",
+            "plan_version",
+            "activity_id"
+          ]
+        }
+      },
+      "uniqueConstraints": {
+        "plan_activities_position_unique": {
+          "name": "plan_activities_position_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "journey_id",
+            "plan_version",
+            "position"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "plan_activities_position_check": {
+          "name": "plan_activities_position_check",
+          "value": "\"plan_activities\".\"position\" >= 0"
+        },
+        "plan_activities_place_name_length_check": {
+          "name": "plan_activities_place_name_length_check",
+          "value": "\"plan_activities\".\"place_name\" = btrim(\"plan_activities\".\"place_name\") and char_length(\"plan_activities\".\"place_name\") between 1 and 80"
+        },
+        "plan_activities_time_window_check": {
+          "name": "plan_activities_time_window_check",
+          "value": "\"plan_activities\".\"starts_at\" < \"plan_activities\".\"ends_at\""
+        },
+        "plan_activities_priority_check": {
+          "name": "plan_activities_priority_check",
+          "value": "\"plan_activities\".\"priority\" in ('high', 'normal', 'low')"
+        },
+        "plan_activities_reservation_lock_check": {
+          "name": "plan_activities_reservation_lock_check",
+          "value": "\"plan_activities\".\"reservation_id\" is null or (\"plan_activities\".\"locked\" = true and \"plan_activities\".\"priority\" = 'high')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.plan_confirmations": {
+      "name": "plan_confirmations",
+      "schema": "",
+      "columns": {
+        "journey_id": {
+          "name": "journey_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "idempotency_key": {
+          "name": "idempotency_key",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "intent_fingerprint": {
+          "name": "intent_fingerprint",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "base_plan_version": {
+          "name": "base_plan_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "base_observation_version": {
+          "name": "base_observation_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "result_plan_version": {
+          "name": "result_plan_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "result_observation_version": {
+          "name": "result_observation_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "normalized_input": {
+          "name": "normalized_input",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "strategy": {
+          "name": "strategy",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "preview_fingerprint": {
+          "name": "preview_fingerprint",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "travel_source": {
+          "name": "travel_source",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "transfer_buffer_minutes": {
+          "name": "transfer_buffer_minutes",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "confirmed_at": {
+          "name": "confirmed_at",
+          "type": "timestamp (0) with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "plan_confirmations_journey_id_journeys_id_fk": {
+          "name": "plan_confirmations_journey_id_journeys_id_fk",
+          "tableFrom": "plan_confirmations",
+          "tableTo": "journeys",
+          "columnsFrom": [
+            "journey_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "plan_confirmations_result_plan_fkey": {
+          "name": "plan_confirmations_result_plan_fkey",
+          "tableFrom": "plan_confirmations",
+          "tableTo": "plan_versions",
+          "columnsFrom": [
+            "journey_id",
+            "result_plan_version"
+          ],
+          "columnsTo": [
+            "journey_id",
+            "version"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "plan_confirmations_result_observation_fkey": {
+          "name": "plan_confirmations_result_observation_fkey",
+          "tableFrom": "plan_confirmations",
+          "tableTo": "journey_observations",
+          "columnsFrom": [
+            "journey_id",
+            "result_observation_version"
+          ],
+          "columnsTo": [
+            "journey_id",
+            "version"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "plan_confirmations_pkey": {
+          "name": "plan_confirmations_pkey",
+          "columns": [
+            "journey_id",
+            "idempotency_key"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "plan_confirmations_versions_check": {
+          "name": "plan_confirmations_versions_check",
+          "value": "\"plan_confirmations\".\"base_plan_version\" > 0 and \"plan_confirmations\".\"base_observation_version\" >= 0 and \"plan_confirmations\".\"result_plan_version\" = \"plan_confirmations\".\"base_plan_version\" + 1 and \"plan_confirmations\".\"result_observation_version\" = \"plan_confirmations\".\"base_observation_version\" + 1"
+        },
+        "plan_confirmations_strategy_check": {
+          "name": "plan_confirmations_strategy_check",
+          "value": "\"plan_confirmations\".\"strategy\" in ('shift', 'omit')"
+        },
+        "plan_confirmations_travel_source_check": {
+          "name": "plan_confirmations_travel_source_check",
+          "value": "\"plan_confirmations\".\"travel_source\" in ('user_estimate', 'same_place')"
+        },
+        "plan_confirmations_buffer_check": {
+          "name": "plan_confirmations_buffer_check",
+          "value": "\"plan_confirmations\".\"transfer_buffer_minutes\" = 10"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.plan_versions": {
+      "name": "plan_versions",
+      "schema": "",
+      "columns": {
+        "journey_id": {
+          "name": "journey_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "version": {
+          "name": "version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "parent_version": {
+          "name": "parent_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "change_reason": {
+          "name": "change_reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "is_current": {
+          "name": "is_current",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp (0) with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "plan_versions_one_current_per_journey": {
+          "name": "plan_versions_one_current_per_journey",
+          "columns": [
+            {
+              "expression": "journey_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"plan_versions\".\"is_current\" = true",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "plan_versions_journey_id_journeys_id_fk": {
+          "name": "plan_versions_journey_id_journeys_id_fk",
+          "tableFrom": "plan_versions",
+          "tableTo": "journeys",
+          "columnsFrom": [
+            "journey_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "plan_versions_parent_fkey": {
+          "name": "plan_versions_parent_fkey",
+          "tableFrom": "plan_versions",
+          "tableTo": "plan_versions",
+          "columnsFrom": [
+            "journey_id",
+            "parent_version"
+          ],
+          "columnsTo": [
+            "journey_id",
+            "version"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "plan_versions_pkey": {
+          "name": "plan_versions_pkey",
+          "columns": [
+            "journey_id",
+            "version"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "plan_versions_version_check": {
+          "name": "plan_versions_version_check",
+          "value": "\"plan_versions\".\"version\" > 0"
+        },
+        "plan_versions_parent_version_check": {
+          "name": "plan_versions_parent_version_check",
+          "value": "\"plan_versions\".\"parent_version\" is null or (\"plan_versions\".\"parent_version\" > 0 and \"plan_versions\".\"parent_version\" < \"plan_versions\".\"version\")"
+        },
+        "plan_versions_change_reason_check": {
+          "name": "plan_versions_change_reason_check",
+          "value": "\"plan_versions\".\"change_reason\" is null or (\"plan_versions\".\"change_reason\" = btrim(\"plan_versions\".\"change_reason\") and char_length(\"plan_versions\".\"change_reason\") > 0)"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.planning_tasks": {
+      "name": "planning_tasks",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "journey_id": {
+          "name": "journey_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "request_key": {
+          "name": "request_key",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "intent_fingerprint": {
+          "name": "intent_fingerprint",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "input": {
+          "name": "input",
+          "type": "json",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "progress": {
+          "name": "progress",
+          "type": "json",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "result": {
+          "name": "result",
+          "type": "json",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "offer": {
+          "name": "offer",
+          "type": "json",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "stop_reason": {
+          "name": "stop_reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "attempts": {
+          "name": "attempts",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "lease_owner": {
+          "name": "lease_owner",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "lease_token": {
+          "name": "lease_token",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "lease_expires_at": {
+          "name": "lease_expires_at",
+          "type": "timestamp (0) with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "cancel_requested_at": {
+          "name": "cancel_requested_at",
+          "type": "timestamp (0) with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "deadline_at": {
+          "name": "deadline_at",
+          "type": "timestamp (0) with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp (0) with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "started_at": {
+          "name": "started_at",
+          "type": "timestamp (0) with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "finished_at": {
+          "name": "finished_at",
+          "type": "timestamp (0) with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "planning_tasks_claim_idx": {
+          "name": "planning_tasks_claim_idx",
+          "columns": [
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "planning_tasks_finished_idx": {
+          "name": "planning_tasks_finished_idx",
+          "columns": [
+            {
+              "expression": "finished_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "planning_tasks_journey_id_journeys_id_fk": {
+          "name": "planning_tasks_journey_id_journeys_id_fk",
+          "tableFrom": "planning_tasks",
+          "tableTo": "journeys",
+          "columnsFrom": [
+            "journey_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "planning_tasks_request_key_unique": {
+          "name": "planning_tasks_request_key_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "request_key"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "planning_tasks_kind_check": {
+          "name": "planning_tasks_kind_check",
+          "value": "\n      (\"planning_tasks\".\"kind\" = 'day_draft' and \"planning_tasks\".\"journey_id\" is null)\n      or (\"planning_tasks\".\"kind\" = 'day_replan' and \"planning_tasks\".\"journey_id\" is not null)\n    "
+        },
+        "planning_tasks_status_check": {
+          "name": "planning_tasks_status_check",
+          "value": "\"planning_tasks\".\"status\" in ('queued', 'running', 'completed', 'failed', 'cancelled')"
+        },
+        "planning_tasks_stop_reason_check": {
+          "name": "planning_tasks_stop_reason_check",
+          "value": "\"planning_tasks\".\"stop_reason\" is null or \"planning_tasks\".\"stop_reason\" in ('cancelled', 'deadline', 'worker_lost')"
+        },
+        "planning_tasks_attempts_check": {
+          "name": "planning_tasks_attempts_check",
+          "value": "\"planning_tasks\".\"attempts\" between 0 and 3"
+        },
+        "planning_tasks_fingerprint_check": {
+          "name": "planning_tasks_fingerprint_check",
+          "value": "\"planning_tasks\".\"intent_fingerprint\" ~ '^[a-f0-9]{64}$'"
+        },
+        "planning_tasks_lease_check": {
+          "name": "planning_tasks_lease_check",
+          "value": "\n      (\"planning_tasks\".\"status\" = 'running') = (\"planning_tasks\".\"lease_token\" is not null)\n      and (\"planning_tasks\".\"lease_token\" is null) = (\"planning_tasks\".\"lease_expires_at\" is null)\n      and (\"planning_tasks\".\"lease_token\" is null) = (\"planning_tasks\".\"lease_owner\" is null)\n    "
+        },
+        "planning_tasks_terminal_check": {
+          "name": "planning_tasks_terminal_check",
+          "value": "\n      (\"planning_tasks\".\"status\" in ('completed', 'failed', 'cancelled')) = (\"planning_tasks\".\"finished_at\" is not null)\n      and (\"planning_tasks\".\"status\" <> 'completed' or \"planning_tasks\".\"result\" is not null)\n      and (\"planning_tasks\".\"status\" not in ('failed', 'cancelled') or \"planning_tasks\".\"result\" is not null or \"planning_tasks\".\"stop_reason\" is not null)\n      and (\"planning_tasks\".\"offer\" is null or \"planning_tasks\".\"status\" = 'completed')\n    "
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.reservations": {
+      "name": "reservations",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "journey_id": {
+          "name": "journey_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "place_id": {
+          "name": "place_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "place_name": {
+          "name": "place_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "starts_at": {
+          "name": "starts_at",
+          "type": "timestamp (0) with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "ends_at": {
+          "name": "ends_at",
+          "type": "timestamp (0) with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "confirmation_status": {
+          "name": "confirmation_status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source_kind": {
+          "name": "source_kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source_reference": {
+          "name": "source_reference",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "recorded_at": {
+          "name": "recorded_at",
+          "type": "timestamp (0) with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "reservations_journey_id_idx": {
+          "name": "reservations_journey_id_idx",
+          "columns": [
+            {
+              "expression": "journey_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "reservations_journey_id_journeys_id_fk": {
+          "name": "reservations_journey_id_journeys_id_fk",
+          "tableFrom": "reservations",
+          "tableTo": "journeys",
+          "columnsFrom": [
+            "journey_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "reservations_journey_id_id_unique": {
+          "name": "reservations_journey_id_id_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "journey_id",
+            "id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "reservations_place_name_length_check": {
+          "name": "reservations_place_name_length_check",
+          "value": "\"reservations\".\"place_name\" = btrim(\"reservations\".\"place_name\") and char_length(\"reservations\".\"place_name\") between 1 and 80"
+        },
+        "reservations_time_window_check": {
+          "name": "reservations_time_window_check",
+          "value": "\"reservations\".\"starts_at\" < \"reservations\".\"ends_at\""
+        },
+        "reservations_confirmation_status_check": {
+          "name": "reservations_confirmation_status_check",
+          "value": "\"reservations\".\"confirmation_status\" in ('confirmed', 'pending', 'cancelled', 'unknown')"
+        },
+        "reservations_source_kind_check": {
+          "name": "reservations_source_kind_check",
+          "value": "\"reservations\".\"source_kind\" in ('fixture', 'user_reported', 'provider_record')"
+        }
+      },
+      "isRLSEnabled": false
+    }
+  },
+  "enums": {},
+  "schemas": {},
+  "sequences": {},
+  "roles": {},
+  "policies": {},
+  "views": {},
+  "_meta": {
+    "columns": {},
+    "schemas": {},
+    "tables": {}
+  }
+}
