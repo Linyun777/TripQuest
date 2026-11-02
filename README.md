@@ -8,9 +8,11 @@ TripQuest 是一个面向国内自由行的 AI 旅行助手。把时间、地点
 
 [界面演示](#界面演示) · [工程设计](#工程设计) · [本地启动](#本地启动) · [检查](#检查) · [源码结构](#源码结构)
 
-![TripQuest 首页：日常与出游入口、自然语言输入和示例时间线](assets/screenshots/01-home.webp)
+![TripQuest 首页：日常与出游入口、自然语言输入和示例时间线](assets/screenshots/01-home.png)
 
-截图来自本地运行的应用，使用手工构造的合成行程与模拟服务响应；展示交互形态，地图使用访问顺序示意图。首页右侧为应用内置的示例方案。
+[查看高清原图](assets/screenshots/01-home.png)
+
+以下为本地应用的 **2 倍像素密度 PNG 实拍图**，点击图片或“查看高清原图”可放大查看。行程使用手工构造的合成数据与模拟服务响应，地图为访问顺序示意图；首页右侧是应用内置的示例方案。
 
 ## 可以做什么
 
@@ -32,23 +34,35 @@ TripQuest 是一个面向国内自由行的 AI 旅行助手。把时间、地点
 
 日期、活动时段、必去地点、固定预约、兴趣、交通方式和节奏会集中到一张卡片里。可以直接编辑，也可以继续用对话补充。缺少必要信息时，卡片会列出还需要什么。
 
-![需求确认：日期、时段、必去与固定事项、兴趣和交通方式](assets/screenshots/02-requirements.webp)
+![需求确认：日期、时段、必去与固定事项、兴趣和交通方式](assets/screenshots/02-requirements.png)
+
+[查看高清原图](assets/screenshots/02-requirements.png)
 
 ### 2. 同时看安排和空间顺序
 
 一日方案按站点展示时间、交通方式和推荐理由。“必去”和“固定”会单独标记；桌面端右侧可以在地图和时间线之间切换。
 
-![一日方案：对话和时间线位于左侧，访问顺序示意图位于右侧](assets/screenshots/03-day-plan.webp)
+![一日方案：对话和时间线位于左侧，访问顺序示意图位于右侧](assets/screenshots/03-day-plan.png)
+
+[查看高清原图](assets/screenshots/03-day-plan.png)
 
 ### 3. 途中有变，先看差异
 
 “已完成”“保留”“时间变了”“新增”“去掉”分别显示。下面的示例保留已逛完的书院和 16 点的茶叙，把午餐顺延，并用咖啡馆替换下午的美术馆。
 
-![途中调整：逐项对照原来与调整后的安排](assets/screenshots/04-adjustment.webp)
+![途中调整：逐项对照原来与调整后的安排](assets/screenshots/04-adjustment.png)
+
+[查看高清原图](assets/screenshots/04-adjustment.png)
 
 候选绑定生成时的基础版本；重新打开对话或出现更新后，旧候选会锁定，重新生成后才能确认。
 
 ### 4. 把交通、住处和每天的安排放在一起
+
+在首页选择“出游”，会切换到暖色的出游主页面。可以直接输入日期、目的地、交通和想玩的内容，也可以从示例开始。
+
+![出游主页面：暖色主题、1–7 天跨城说明、出游输入框和示例](assets/screenshots/12-outing-home.png)
+
+[查看出游首页高清原图](assets/screenshots/12-outing-home.png)
 
 出游模式支持 **1–7 天**，一天内也可以跨城。固定交通会切开当天的可用时段，每晚住处作为衔接点；地点先分到各天，再逐天生成。某一天不满意，可以只重排那一天。
 
@@ -58,15 +72,15 @@ TripQuest 是一个面向国内自由行的 AI 旅行助手。把时间、地点
     <th width="50%">按天展示，支持单日重排</th>
   </tr>
   <tr>
-    <td align="center"><a href="assets/screenshots/07-transport-lodging-mobile.webp"><img src="assets/screenshots/07-transport-lodging-mobile.webp" alt="出游卡片中的往返交通、两晚同一住处与分配入口" width="330"></a></td>
-    <td align="center"><a href="assets/screenshots/08-outing-day-mobile.webp"><img src="assets/screenshots/08-outing-day-mobile.webp" alt="相邻两天的时间线、返回住处及重排这一天按钮" width="330"></a></td>
+    <td align="center"><a href="assets/screenshots/07-transport-lodging-mobile.png"><img src="assets/screenshots/07-transport-lodging-mobile.png" alt="出游卡片中的往返交通、两晚同一住处与分配入口" width="380"></a></td>
+    <td align="center"><a href="assets/screenshots/08-outing-day-mobile.png"><img src="assets/screenshots/08-outing-day-mobile.png" alt="相邻两天的时间线、返回住处及重排这一天按钮" width="380"></a></td>
   </tr>
 </table>
 
 <details>
 <summary>展开查看出游需求卡：日期、每日时段和指定第几天去的地点</summary>
 
-<img src="assets/screenshots/06-outing-card-mobile.webp" alt="三天出游的日期、每日时段、起终点与按天指定的必去地点" width="390">
+<img src="assets/screenshots/06-outing-card-mobile.png" alt="三天出游的日期、每日时段、起终点与按天指定的必去地点" width="390">
 
 </details>
 
@@ -80,8 +94,8 @@ TripQuest 是一个面向国内自由行的 AI 旅行助手。把时间、地点
     <th width="50%">带资料出处的回答</th>
   </tr>
   <tr>
-    <td align="center"><a href="assets/screenshots/05-short-mobile.webp"><img src="assets/screenshots/05-short-mobile.webp" alt="短途咖啡馆候选：推荐理由、演示距离、选择与换一批" width="330"></a></td>
-    <td align="center"><a href="assets/screenshots/09-knowledge-mobile.webp"><img src="assets/screenshots/09-knowledge-mobile.webp" alt="苏堤与白堤的旅行问答及资料库引用入口" width="330"></a></td>
+    <td align="center"><a href="assets/screenshots/05-short-mobile.png"><img src="assets/screenshots/05-short-mobile.png" alt="短途咖啡馆候选：推荐理由、演示距离、选择与换一批" width="380"></a></td>
+    <td align="center"><a href="assets/screenshots/09-knowledge-mobile.png"><img src="assets/screenshots/09-knowledge-mobile.png" alt="苏堤与白堤的旅行问答及资料库引用入口" width="380"></a></td>
   </tr>
 </table>
 
@@ -95,8 +109,8 @@ TripQuest 是一个面向国内自由行的 AI 旅行助手。把时间、地点
     <th width="50%">方案与地图抽屉</th>
   </tr>
   <tr>
-    <td align="center"><a href="assets/screenshots/10-plan-mobile.webp"><img src="assets/screenshots/10-plan-mobile.webp" alt="手机端一日行程对话和顶部地图入口" width="330"></a></td>
-    <td align="center"><a href="assets/screenshots/11-map-mobile.webp"><img src="assets/screenshots/11-map-mobile.webp" alt="手机端方案抽屉：访问顺序示意图和站点列表" width="330"></a></td>
+    <td align="center"><a href="assets/screenshots/10-plan-mobile.png"><img src="assets/screenshots/10-plan-mobile.png" alt="手机端一日行程对话和顶部地图入口" width="380"></a></td>
+    <td align="center"><a href="assets/screenshots/11-map-mobile.png"><img src="assets/screenshots/11-map-mobile.png" alt="手机端方案抽屉：访问顺序示意图和站点列表" width="380"></a></td>
   </tr>
 </table>
 
