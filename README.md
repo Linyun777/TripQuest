@@ -1,17 +1,125 @@
 # TripQuest
 
-用对话规划行程，在旅途中继续调整。TripQuest 是一个面向国内自由行的 TypeScript 全栈项目：模型提出方案，代码检查时间、路线与约束，用户确认后才保存。
+**说出想法，规划行程；途中有变，继续调整。**
+
+TripQuest 是一个面向国内自由行的 AI 旅行助手。把时间、地点、兴趣和固定安排告诉它，先确认需求，再查看方案；出发后，也可以继续用对话记录进度、替换地点和调整后续行程。
+
+模型负责理解和提出候选，代码核对时间、路线与约束，用户确认后才保存。
+
+[界面演示](#界面演示) · [工程设计](#工程设计) · [本地启动](#本地启动) · [检查](#检查) · [源码结构](#源码结构)
+
+![TripQuest 首页：日常与出游入口、自然语言输入和示例时间线](assets/screenshots/01-home.webp)
+
+截图来自本地运行的应用，使用手工构造的合成行程与模拟服务响应；展示交互形态，地图使用访问顺序示意图。首页右侧为应用内置的示例方案。
 
 ## 可以做什么
 
-- **日常出行**：所在城市的一日规划；短途逐站挑选，每一步都有候选。
-- **多日出游**：1–7 天、支持一天内跨城，整理固定交通和每晚住处，先分配到各天，再逐天规划。
-- **途中调整**：记录已完成、跳过和延误；保留固定事项与未授权修改的部分，预览差异后确认。
-- **有依据的回答**：查询旅游信息并附来源；自写知识库通过混合召回与重排提供段落引用。
-- **可恢复的交互**：长任务登记、去重、刷新后重新接上、停止及中断后的继续；记录 Agent 调用链与共用预算。
-- **账号隔离**：邀请码注册，用户名与密码登录，每位用户独立的对话、行程、偏好与每日额度。
+| 场景 | 你可以这样说 | 应用会给出什么 |
+| --- | --- | --- |
+| 一日规划 | “周六逛书院，下午看展，16 点的茶叙保留，别太赶。” | 可编辑需求卡、分段出行方式、带时间的方案与地点顺序 |
+| 现在出发 | “先喝杯咖啡，再去附近公园走走。” | 每一步提供候选，选好后围绕上一站找下一站 |
+| 多日出游 | “玩三天，两晚住同一家，第一天早上到、第三天晚上回。” | 日期、固定交通、每晚住处，以及分到各天的行程 |
+| 途中调整 | “午饭晚了半小时，下午不看展了，换成喝咖啡。” | 原来与调整后的对照，保留已完成事项和固定安排 |
+| 旅行问答 | “苏堤和白堤各有什么故事？” | 结合资料库或联网查询的回答，附网页或段落出处 |
 
-技术栈：Next.js / React / Tailwind CSS、LangGraph.js / LangChain.js、Zod、PostgreSQL / pgvector / Drizzle、Better Auth、Vitest、pnpm。
+此外，还支持邀请码注册、按用户隔离的数据、经确认保存的长期偏好、每日额度，以及长任务的刷新重连、停止和中断后继续。
+
+技术栈：**TypeScript · Next.js · React · Tailwind CSS · LangGraph.js · LangChain.js · Zod · PostgreSQL / pgvector · Drizzle · Better Auth · Vitest · pnpm**。
+
+## 界面演示
+
+### 1. 先把需求说清楚
+
+日期、活动时段、必去地点、固定预约、兴趣、交通方式和节奏会集中到一张卡片里。可以直接编辑，也可以继续用对话补充。缺少必要信息时，卡片会列出还需要什么。
+
+![需求确认：日期、时段、必去与固定事项、兴趣和交通方式](assets/screenshots/02-requirements.webp)
+
+### 2. 同时看安排和空间顺序
+
+一日方案按站点展示时间、交通方式和推荐理由。“必去”和“固定”会单独标记；桌面端右侧可以在地图和时间线之间切换。
+
+![一日方案：对话和时间线位于左侧，访问顺序示意图位于右侧](assets/screenshots/03-day-plan.webp)
+
+### 3. 途中有变，先看差异
+
+“已完成”“保留”“时间变了”“新增”“去掉”分别显示。下面的示例保留已逛完的书院和 16 点的茶叙，把午餐顺延，并用咖啡馆替换下午的美术馆。
+
+![途中调整：逐项对照原来与调整后的安排](assets/screenshots/04-adjustment.webp)
+
+候选绑定生成时的基础版本；重新打开对话或出现更新后，旧候选会锁定，重新生成后才能确认。
+
+### 4. 把交通、住处和每天的安排放在一起
+
+出游模式支持 **1–7 天**，一天内也可以跨城。固定交通会切开当天的可用时段，每晚住处作为衔接点；地点先分到各天，再逐天生成。某一天不满意，可以只重排那一天。
+
+<table>
+  <tr>
+    <th width="50%">固定交通与连住安排</th>
+    <th width="50%">按天展示，支持单日重排</th>
+  </tr>
+  <tr>
+    <td align="center"><a href="assets/screenshots/07-transport-lodging-mobile.webp"><img src="assets/screenshots/07-transport-lodging-mobile.webp" alt="出游卡片中的往返交通、两晚同一住处与分配入口" width="330"></a></td>
+    <td align="center"><a href="assets/screenshots/08-outing-day-mobile.webp"><img src="assets/screenshots/08-outing-day-mobile.webp" alt="相邻两天的时间线、返回住处及重排这一天按钮" width="330"></a></td>
+  </tr>
+</table>
+
+<details>
+<summary>展开查看出游需求卡：日期、每日时段和指定第几天去的地点</summary>
+
+<img src="assets/screenshots/06-outing-card-mobile.webp" alt="三天出游的日期、每日时段、起终点与按天指定的必去地点" width="390">
+
+</details>
+
+### 5. 也可以只挑下一站，或问一个旅行问题
+
+短途模式逐站选择，展示候选理由和相对距离；资料问答则提供出处入口，可以继续查看来源。两类交互都保留在对话里。
+
+<table>
+  <tr>
+    <th width="50%">逐站挑选</th>
+    <th width="50%">带资料出处的回答</th>
+  </tr>
+  <tr>
+    <td align="center"><a href="assets/screenshots/05-short-mobile.webp"><img src="assets/screenshots/05-short-mobile.webp" alt="短途咖啡馆候选：推荐理由、演示距离、选择与换一批" width="330"></a></td>
+    <td align="center"><a href="assets/screenshots/09-knowledge-mobile.webp"><img src="assets/screenshots/09-knowledge-mobile.webp" alt="苏堤与白堤的旅行问答及资料库引用入口" width="330"></a></td>
+  </tr>
+</table>
+
+### 6. 手机端保留对话，按需展开方案
+
+手机上以对话为主，点击顶部“地图”打开方案面板；面板里继续切换地图与时间线。
+
+<table>
+  <tr>
+    <th width="50%">行程对话</th>
+    <th width="50%">方案与地图抽屉</th>
+  </tr>
+  <tr>
+    <td align="center"><a href="assets/screenshots/10-plan-mobile.webp"><img src="assets/screenshots/10-plan-mobile.webp" alt="手机端一日行程对话和顶部地图入口" width="330"></a></td>
+    <td align="center"><a href="assets/screenshots/11-map-mobile.webp"><img src="assets/screenshots/11-map-mobile.webp" alt="手机端方案抽屉：访问顺序示意图和站点列表" width="330"></a></td>
+  </tr>
+</table>
+
+## 工程设计
+
+```mermaid
+flowchart LR
+    A[对话表达需求] --> B[结构化需求卡]
+    B --> C[用户确认需求]
+    C --> D[Agent 搜索与提出方案]
+    D --> E[代码排程与硬约束检查]
+    E --> F[候选方案与差异预览]
+    F --> G[用户确认]
+    G --> H[权限、版本复查与事务保存]
+```
+
+- **专门 Agent 协作**：对话按意图调用需求理解、改行程、资料查询、建议或陪聊模块；出游总控复用一日规划，再做整趟审查。
+- **确定性保护**：Zod 检查结构，领域代码检查时间、交通衔接、固定事项、已完成事实与修改范围。未知路线保留为未知，无可行方案时说明原因。
+- **确认与版本保护**：候选带基础状态和指纹，服务端再次核对权限、版本、硬约束与幂等性，防止旧候选覆盖新安排。
+- **可观察、可恢复**：记录父子运行、工具调用与共用预算。业务计划、对话、长任务和图检查点分开管理；演示任务由同仓库 Worker 与 PostgreSQL 检查点恢复，真实对话任务按已保存的业务结果继续。
+- **检索链路完整**：自写语料 → 切分 → 嵌入 → pgvector 与关键词混合召回 → 重排 → 带段落引用的回答。
+
+详细架构、关键取舍与源码阅读顺序见 [工程导读](PROJECT_CONTEXT.md)。
 
 ## 本地启动
 
