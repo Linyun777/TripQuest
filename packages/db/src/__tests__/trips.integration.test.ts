@@ -43,6 +43,10 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)("V2.11 an outing is saved with i
       { id: id(9, 1), title: "云岭出游", day: 1, part: 0, firstDate: "2026-10-17", lastDate: "2026-10-18" },
       { id: id(9, 1), title: "云岭出游", day: 2, part: 0, firstDate: "2026-10-17", lastDate: "2026-10-18" },
     ]));
+    // 一趟出游算一项：只要 1 项也带全它的各天（按行截取时后面的天被截掉，页面把它们显示成“只有交通”）。
+    await repository.createRealDay(segment(4, "2026-10-20"));
+    expect((await repository.listJourneys(1)).map((item) => item.trip?.day).sort()).toEqual([1, 2]);
+    expect(await repository.listJourneys(2)).toHaveLength(3);
     const { rows } = await client.pool.query("SELECT details::text AS text FROM trips");
     expect(rows[0].text).not.toMatch(/location|longitude|address|duration|distance/);
   });

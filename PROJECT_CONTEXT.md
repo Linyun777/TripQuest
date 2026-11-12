@@ -4,7 +4,15 @@
 
 用户说出需求 → 分流与专门 Agent 整理需求卡 → 用户确认需求 → 搜索地点与路线 → 确定性排程和校验 → 候选方案 → 用户确认 → 事务写入新版本。
 
-日常模式支持一日与逐站短途；出游模式支持 1–7 天、固定交通、住处、多城和跨天调整。出游总控用一张 LangGraph StateGraph 承接分配、生成和修改，复用一日规划能力。审查器先由代码发现问题，再由 Agent 提结构化改动；直接修复需通过代码复查，其余交给用户选择。
+日常模式支持一日与逐站短途；出游模式支持 1–7 天、固定交通、住处、多城和跨天调整。出游总控用一张 LangGraph StateGraph 承接分配、生成和修改，复用一日规划能力。用户说出的日期、住宿晚数和每晚城市由确定性代码核对；未指定的交通和车站可以补为可修改的暂定项。
+
+## 分流与出游审查
+
+`INTENT_ROUTER=regex+deepseek` 是默认分流：规则有把握时直接决定，拿不准时调用模型，失败退回规则。专门对话 Agent 按分流结果调用，共用轮次预算。
+
+出游审查默认 `OUTING_REVIEW=single`：代码发现空闲、未排上的兴趣等问题，模型提出结构化改动；直接修复需通过代码复查，增加兴趣的建议先试排，再交给用户选择。`off` 关闭审查，`on` 与 `single` 等价。
+
+可选实验 `OUTING_REVIEW=agent` 使用带工具循环的审查-修复 Agent，调用一日规划器试排改动，并加入对照需求清单的整体判断。长期偏好和整体判断清单也随这个开关启用；该路径尚未成为默认方案。登记表用 `kind: agent | step` 区分带工具循环的 Agent 与单步模型调用。
 
 ## 边界与取舍
 
@@ -23,7 +31,8 @@
 | 对话页面与状态同步 | `apps/web/src/app/plan/chat-workspace.tsx`、`chat-controller.tsx` |
 | 整理需求与专门 Agent | `apps/web/src/app/plan/conversation-service.ts` → `packages/agent/src/chat-agents.ts`、`chat-agent-prompts.ts` |
 | 一日规划 | `apps/web/src/app/plan/plan-service.ts` → `packages/agent/src/day-graph.ts` → `packages/application/src/day-planning.ts` |
-| 出游编排与审查 | `packages/agent/src/outing-graph.ts`、`outing-allocate.ts`、`outing-review.ts` |
+| 出游编排与审查 | `packages/agent/src/outing-graph.ts`、`outing-allocate.ts`、`outing-review.ts`、`outing-repair.ts`、`outing-judge.ts` |
+| 日期、住宿与交通补全 | `packages/application/src/said-dates.ts`、`outing-stays.ts`、`outing-rides.ts` → `packages/agent/src/outing-after-turn.ts` |
 | 地点与路线 | `packages/providers/src/contracts.ts`、`server/amap.ts` |
 | 途中调整与确认 | `apps/web/src/app/plan/adjust-service.ts` → `packages/application/src/real-adjust.ts`、`day-confirmation.ts` |
 | 领域校验 | `packages/domain/src/candidate-validation.ts`、`day-validation.ts` |

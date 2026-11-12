@@ -57,6 +57,57 @@ describe("V3.1 outing graph", () => {
     expect(state).toMatchObject({ status: "needs_user", stop: null, pending: [], current: null });
   });
 
+  it("V4.7: a day the saved preferences block is planned again without them and says so; failures that are not about preferences are not retried", async () => {
+    const withPreference: OutingInput = { ...input, preferences: ["不喜欢博物馆"] };
+    const calls: string[] = [];
+    const answering = (answer: (problem: Parameters<DayPlanningRunner["run"]>[0]) => ReturnType<DayPlanningRunner["run"]> | null): DayPlanningRunner => ({
+      run: (problem, options) => {
+        calls.push(`${problem.requirements.date}|${problem.requirements.notes ?? ""}`);
+        return answer(problem) ?? real().run(problem, options);
+      },
+    });
+    const base = (problem: Parameters<DayPlanningRunner["run"]>[0]) => ({
+      runId: problem.runId, counts: { model: 0, searches: 0, tries: 0, routes: 0, semanticRepairs: 0 }, elapsedMs: 0, usage: null,
+    });
+    const refusing = answering((problem) => problem.requirements.date === "2026-10-16" && problem.requirements.notes?.includes("长期偏好")
+      ? Promise.resolve({ ...base(problem), status: "completed", outcome: "no_plan", reason: "constraints_not_met", issues: [] } as never)
+      : null);
+    const { generated } = await generateWithState(withPreference, allocation, { runner: refusing, provider, now }, { signal: signal() });
+    expect(generated.map((day) => day.result.status)).toEqual(["draft", "draft", "draft"]);
+    expect(generated[1]!.result.status === "draft" && generated[1]!.result.notes).toContain("按你保存的长期偏好这天排不出，这一天先没考虑偏好。");
+    expect(generated[0]!.result.status === "draft" && generated[0]!.result.notes).not.toContain("按你保存的长期偏好这天排不出，这一天先没考虑偏好。");
+    // 第 3 天演示博物馆用完了，去掉偏好也排不上：没变好就不说是偏好的事。
+    expect(generated[2]!.result.status === "draft" && generated[2]!.result.notes).not.toContain("按你保存的长期偏好这天排不出，这一天先没考虑偏好。");
+    expect(calls.filter((call) => call === "2026-10-16|").length).toBe(1);
+
+    calls.length = 0;
+    const broken = answering((problem) => problem.requirements.date === "2026-10-16"
+      ? Promise.resolve({ ...base(problem), status: "failed", code: "provider_error" } as never)
+      : null);
+    const failed = await generateWithState(withPreference, allocation, { runner: broken, provider, now }, { signal: signal() });
+    expect(failed.generated[1]!.result.status).toBe("failed");
+    expect(calls.length).toBe(3);
+
+    // 没有长期偏好时排不出就是排不出，不多排一次。
+    calls.length = 0;
+    const plain = answering((problem) => problem.requirements.date === "2026-10-16"
+      ? Promise.resolve({ ...base(problem), status: "completed", outcome: "no_plan", reason: "constraints_not_met", issues: [] } as never)
+      : null);
+    await generateWithState(input, allocation, { runner: plain, provider, now }, { signal: signal() });
+    expect(calls.length).toBe(3);
+
+    // 带地点的一段排不出时整天是 no_plan：同样去掉偏好再排。
+    calls.length = 0;
+    const visits: OutingInput["visits"] = [{ key: "v1", place: selection(1), role: "optional", stayMinutes: 60 }];
+    const visiting = answering((problem) => problem.requirements.date === "2026-10-16" && problem.requirements.notes?.includes("长期偏好")
+      ? Promise.resolve({ ...base(problem), status: "completed", outcome: "no_plan", reason: "constraints_not_met", issues: [] } as never)
+      : null);
+    const split = { days: [{ day: 1, visits: [], interests: ["i1"] }, { day: 2, visits: ["v1"], interests: [] }, { day: 3, visits: [], interests: ["i1"] }] };
+    const placed = await generateWithState({ ...withPreference, visits }, split, { runner: visiting, provider, now }, { signal: signal() });
+    expect(placed.generated[1]!.result.status).toBe("draft");
+    expect(calls.filter((call) => call === "2026-10-16|").length).toBe(1);
+  });
+
   it("plans only the asked days, with what the other days found excluded", async () => {
     const graph = await generateWithState(input, allocation, { runner: real(), provider, now }, { signal: signal(), days: [2], exclude: ["DEMO-MUSEUM-A"] });
     expect(graph.generated.map((day) => day.day)).toEqual([2]);

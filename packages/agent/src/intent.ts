@@ -31,6 +31,8 @@ export interface IntentRoute {
   /** V2.9.2：实际回答的模型版本与输入 tokens（Jev 返回；用于报告版本和费用）。 */
   readonly model?: string;
   readonly inputTokens?: number;
+  /** V4.1 级联：正则拿不准的原因（交给了模型）；拿得准时没有。 */
+  readonly unsure?: RegexUnsureRule;
 }
 
 export interface IntentRouter {
@@ -111,6 +113,38 @@ export function regexIntent(input: IntentInput): IntentFlags {
   return { planning, ...flags };
 }
 
+/**
+ * V4.1 级联（stages/V4.1.md §3.1）：正则什么时候“拿不准”。三条候选规则：
+ * - guessed：提问只来自问句安全网（像问句，但词表没认出是哪种、不是要建议、也没说只是问问）；
+ * - nothing：什么都没认出来（没有规划的说法，也没有别的判断，只是按规划兜底），而且不像卡片上的跟进（“好的”“第二个”）；
+ * - conflict：同时判出互相冲突的几种（闲聊和别的请求一起，或三种以上）。
+ * 用哪几条由第 1 步离线定（RegexUnsureRule[]），定下后锁定在 UNSURE_RULES。
+ */
+export type RegexUnsureRule = "guessed" | "nothing" | "conflict";
+/** 卡片上的跟进：短回复、接受上一条的提议（不当作“什么都没认出来”）。 */
+const FOLLOW_UP = /^(好的?|好吧|行|可以|嗯+|ok|okay|就这样|就这个|就它|都行|没问题|对|是的?|第[一二三四五12345]个|那就[^，。？?]{0,8}|就[^，。？?]{0,6}吧)[。！!~～]*$/i;
+
+/**
+ * 第 1 步离线定下、锁定的规则（stages/V4.1.md 结果 8.1）：guessed + nothing。V2.9 分流题和 V2.9.2 新说法留出题共 81 条：
+ * 有把握部分准确率 67/70 = 95.7%，拿不准 11/81 = 13.6%（标准 ≥ 95%、≤ 30%）；加上 conflict 不提高准确率。
+ */
+export const UNSURE_RULES: readonly RegexUnsureRule[] = ["guessed", "nothing"];
+
+export function unsureReason(input: IntentInput, rules: readonly RegexUnsureRule[] = UNSURE_RULES): RegexUnsureRule | null {
+  const text = input.text.trim();
+  const flags = regexIntent(input);
+  if (rules.includes("guessed") && guessedQuestion(text)) return "guessed";
+  if (rules.includes("nothing")) {
+    const others = INTENT_FLAGS.some((flag) => flag !== "planning" && flags[flag]);
+    if (flags.planning && !PLANNING.test(text) && !others && !FOLLOW_UP.test(text)) return "nothing";
+  }
+  if (rules.includes("conflict")) {
+    const count = INTENT_FLAGS.filter((flag) => flags[flag]).length;
+    if ((flags.chitchat && count > 1) || count >= 3) return "conflict";
+  }
+  return null;
+}
+
 export const regexRouter: IntentRouter = {
   name: "regex",
   async route(input) {
@@ -125,6 +159,22 @@ export const regexRouter: IntentRouter = {
     };
   },
 };
+
+/**
+ * V4.1 级联（stages/V4.1.md §3.2）：正则拿得准就用正则（零成本、确定）；拿不准（UNSURE_RULES）才交给模型分流，
+ * 用它的判断。模型失败、超时由它自己退回正则（regexFallback），这里不另做。
+ */
+export function createRegexCascadeRouter(model: IntentRouter): IntentRouter {
+  return {
+    name: "regex+deepseek",
+    async route(input, options) {
+      const unsure = unsureReason(input);
+      if (!unsure) return regexRouter.route(input, options);
+      const routed = await model.route(input, options);
+      return { ...routed, unsure };
+    },
+  };
+}
 
 /**
  * 有分数的实现（DeepSeek、向量）共用：分数 ≥ 上界为真、≤ 下界为假，落在中间的“拿不准”

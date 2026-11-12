@@ -10,7 +10,7 @@ import {
   type StoredConversation,
   type StoredMessage,
 } from "@tripquest/application/conversation";
-import { and, asc, eq, sql } from "drizzle-orm";
+import { and, asc, eq, or, sql } from "drizzle-orm";
 import type { JourneyDatabase } from "./connection";
 type Transaction = Parameters<Parameters<JourneyDatabase["transaction"]>[0]>[0];
 import { chatTraces, conversationMessages, conversations } from "./schema";
@@ -83,16 +83,22 @@ export class DrizzleConversationRepository implements ConversationRepository {
     }, { isolationLevel: "repeatable read", accessMode: "read only" });
   }
 
-  /** 查找最初保存这份行程的对话，供行程页回到原规划上下文。 */
+  /**
+   * 查找最初保存这份行程的对话，供行程页回到原规划上下文。日常的行程编号在方案卡片上；出游各天各段的在
+   * outing_day 的 parts 里（跨天改动换过的天是新存的那条）。
+   */
   async findConversationIdByJourney(journeyId: string): Promise<string | null> {
+    const inOutingDay = JSON.stringify([{ plan: { journeyId } }]);
     const [row] = await this.database
       .select({ conversationId: conversationMessages.conversationId })
       .from(conversationMessages)
       .innerJoin(conversations, eq(conversations.id, conversationMessages.conversationId))
       .where(and(
         eq(conversations.userId, this.userId),
-        eq(conversationMessages.kind, "plan_card"),
-        sql`${conversationMessages.body}->>'journeyId' = ${journeyId}`,
+        or(
+          and(eq(conversationMessages.kind, "plan_card"), sql`${conversationMessages.body}->>'journeyId' = ${journeyId}`),
+          and(eq(conversationMessages.kind, "outing_day"), sql`${conversationMessages.body}->'parts' @> ${inOutingDay}::jsonb`),
+        ),
       ))
       .limit(1);
     return row?.conversationId ?? null;

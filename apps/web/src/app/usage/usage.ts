@@ -14,9 +14,9 @@ import type {
   WebSearchRequest,
 } from "@tripquest/providers";
 import { AmapMobilityProvider, DeepSeekSearchProvider } from "@tripquest/providers/server";
-import { getSharedJourneyDatabase, UsageLedger, type JourneyDatabaseClient, type UsageCategory } from "@tripquest/db";
+import { getSharedJourneyDatabase, UsageLedger, UsageUnavailableError, type JourneyDatabaseClient, type UsageCategory } from "@tripquest/db";
 import { KnowledgeStore, knowledgeBase, liveEmbedder, liveReranker, PRODUCT_RERANK_MODEL } from "@tripquest/rag";
-import { regexRouter, type IntentRouter } from "@tripquest/agent/intent";
+import { createRegexCascadeRouter, regexRouter, type IntentRouter } from "@tripquest/agent/intent";
 import { createDeepSeekIntentRouter } from "@tripquest/agent/intent-live";
 import { createEmbeddingIntentRouter, DEFAULT_CASCADE_ROUTER, DEFAULT_EMBEDDING_ROUTER } from "@tripquest/agent/intent-embedding";
 import { jevIntentRouter } from "@tripquest/agent/intent-jev";
@@ -59,6 +59,20 @@ export function createUserUsage(userId: string, now: () => number = Date.now): U
   };
 }
 
+/**
+ * 模型请求之前的预留，给各个 Agent 的 beforeRequest 用：到上限照旧抛出（Agent 记成“今天的次数用完”）；账本暂时记不了时
+ * 抛 unavailable() 给的错误（各 Agent 自己的“暂时出错”），不说成用完。
+ */
+export function reserveModel(usage: Usage, purpose: string, unavailable: () => Error): () => Promise<void> {
+  return async () => {
+    try {
+      await usage.reserve("model", "model", purpose);
+    } catch (error) {
+      throw error instanceof UsageUnavailableError ? unavailable() : error;
+    }
+  };
+}
+
 /** 共用预算用完时的说法（和“今天的次数用完了”分开）。 */
 export const RUN_BUDGET_MESSAGE = "这次请求太复杂，没能做完。";
 
@@ -98,11 +112,14 @@ export function meteredAmap(options: {
   });
   const refused = (error?: unknown) => ({
     status: "failure" as const,
-    failure: {
-      code: "quota_exceeded" as const,
-      retry: "after_quota_reset" as const,
-      safeMessage: error instanceof RunBudgetError ? RUN_BUDGET_MESSAGE : "今天的地点查询次数已用完，请明天再试。",
-    },
+    // 账本暂时记不了（数据库连接、锁超时）不是次数用完：按暂时不可用回，不让用户“明天再试”。
+    failure: error instanceof UsageUnavailableError
+      ? { code: "upstream_unavailable" as const, retry: "after_backoff" as const, safeMessage: "暂时查不了地点，请稍后再试。" }
+      : {
+          code: "quota_exceeded" as const,
+          retry: "after_quota_reset" as const,
+          safeMessage: error instanceof RunBudgetError ? RUN_BUDGET_MESSAGE : "今天的地点查询次数已用完，请明天再试。",
+        },
     evidence: evidence(),
   });
   const guarded = async <T>(kind: UsageKind<"amap">, call: () => Promise<T>) => {
@@ -155,7 +172,9 @@ export function meteredWebSearch(options: { key: string; usage: Usage; purpose: 
         const safeMessage = error instanceof RunBudgetError ? RUN_BUDGET_MESSAGE : "今天的联网搜索次数已用完，请明天再试。";
         return {
           status: "failure",
-          failure: { code: "quota_exceeded", retry: "after_quota_reset", safeMessage },
+          failure: error instanceof UsageUnavailableError
+            ? { code: "upstream_unavailable", retry: "after_backoff", safeMessage: "暂时不能联网搜索，请稍后再试。" }
+            : { code: "quota_exceeded", retry: "after_quota_reset", safeMessage },
           evidence: { provider: "deepseek-search", sourceKind: "live", attribution: "DeepSeek 联网搜索", retrievedAt: new Date(now()).toISOString() },
         };
       }
@@ -186,7 +205,7 @@ export function meteredKnowledge(options: { environment: NodeJS.ProcessEnv; usag
 }
 
 /**
- * V2.9：按 `INTENT_ROUTER` 选分流实现（缺省正则，分流评测选定，stages/V2.9.md §8）。
+ * V2.9：按 `INTENT_ROUTER` 选分流实现（V4.1 起缺省是级联 regex+deepseek；原来缺省正则，stages/V2.9.md §8）。
  * DeepSeek 分类记进模型账本；向量路由每条消息一次嵌入，记进 embed 账本（embed-route），
  * 与资料库共用 EMBEDDING_DAILY_LIMIT，超额时退回正则。
  */
@@ -196,12 +215,13 @@ export function meteredIntentRouter(options: {
   config: unknown;
 }): IntentRouter {
   const env = options.environment;
-  const choice = env.INTENT_ROUTER ?? "regex";
+  // V4.1：缺省是级联（正则拿不准的才问 DeepSeek；stages/V4.1.md 结果，评测达到 §4.3 后切换）。
+  const choice = env.INTENT_ROUTER ?? "regex+deepseek";
   // V2.9.2：Jev 分流（只对照，默认不用）；失败、超时、超出每日上限都整条退回正则。
   if (choice === "jev") {
     return jevIntentRouter(createJevClientFromEnv(env, { beforeRequest: () => options.usage.reserve("jev", "route-jev", "chat-route") }));
   }
-  if (choice !== "deepseek" && choice !== "embedding" && choice !== "cascade") return regexRouter;
+  if (choice !== "deepseek" && choice !== "embedding" && choice !== "cascade" && choice !== "regex+deepseek") return regexRouter;
   const deepseek = () => createDeepSeekIntentRouter({
     config: options.config,
     profileId: env.AGENT_MODEL_PROFILE ?? "",
@@ -209,6 +229,8 @@ export function meteredIntentRouter(options: {
     beforeRequest: () => options.usage.reserve("model", "model", "chat-route"),
   });
   if (choice === "deepseek") return deepseek();
+  // V4.1 级联：正则拿不准的才问 DeepSeek（stages/V4.1.md §3.2）。
+  if (choice === "regex+deepseek") return createRegexCascadeRouter(deepseek());
   if (!env.DASHSCOPE_API_KEY?.trim()) return regexRouter;
   return createEmbeddingIntentRouter({
     embedder: liveEmbedder({ environment: env }),

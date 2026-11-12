@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
-import type { DayProgressCommand } from "@tripquest/application/day-progress";
 import { planningTaskViewSchema, type PlanningTaskView } from "@tripquest/application/planning-task";
 import { createJourneyDatabase, DrizzleJourneyRepository, migrateJourneyDatabase, PgPlanningTaskRepository, requireSafeTestDatabaseUrl, type JourneyDatabaseClient } from "@tripquest/db";
 import { planningFixtureEvidence, planningFixturePlaces } from "@tripquest/providers/planning-fixture";
@@ -12,7 +11,6 @@ import { createDraftHandler } from "../../planning/draft/draft-handler";
 import { createConfirmDayHandler } from "../../planning/confirm/confirm-handler";
 import { createGenerationService } from "../../../planning/new/generation-service";
 import { issuePlaceToken } from "../../../planning/new/place-token";
-import { createReplanHandlers } from "../../journeys/replan-handlers";
 import { createTaskService } from "../task-service";
 import { asTestUser, ownerAndWorkerTasks, ownerId } from "../../../../test-support/users";
 
@@ -62,23 +60,20 @@ const requirements = () => ({
   ],
 });
 
-describe.skipIf(!process.env.TEST_DATABASE_URL)("S6.1 durable draft/replan tasks through the web routes", () => {
+describe.skipIf(!process.env.TEST_DATABASE_URL)("S6.1 durable draft tasks through the web routes", () => {
   let admin: JourneyDatabaseClient;
   let client: JourneyDatabaseClient;
   let journeys: DrizzleJourneyRepository;
   let tasks: PgPlanningTaskRepository;
   let checkpointer: Awaited<ReturnType<typeof createPostgresCheckpointer>>;
   const now = () => t0;
-  const service = () => createTaskService({ environment, now, tasks: () => tasks, journeys: () => journeys });
+  const service = () => createTaskService({ environment, now, tasks: () => tasks });
   const draftRoute = () => createDraftHandler(
     () => createGenerationService({ environment, now }),
     undefined,
     service,
     asTestUser,
   );
-  const replanRoutes = () => createReplanHandlers({
-    environment, now, repository: () => journeys, tasks: service,
-  });
   const view = async (taskId: string): Promise<PlanningTaskView> =>
     planningTaskViewSchema.parse(await service().read(taskId));
   /** One worker pass over whatever is queued. */
@@ -153,53 +148,23 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)("S6.1 durable draft/replan tasks
     expect(saved.status).toBe(201);
   });
 
-  it("runs a replan as a task, keeps version protection at confirmation, and cancels a running task", async () => {
+  it("V3.6: a replan task left from before is not run any more, and still reads back", async () => {
     const journeyId = await savedJourney();
-    const stored = (await journeys.findCurrentJourney(journeyId))!;
-    const [museum] = stored.currentPlan.activities;
-    const report: DayProgressCommand = {
-      reportId: randomUUID(), basePlanVersion: 1, baseObservationVersion: 0,
-      completedActivityIds: [museum.id], skippedActivityIds: [],
-      observedAt: "2026-10-16T10:30+08:00", earliestResumeAt: "2026-10-16T10:40+08:00",
-      location: { kind: "known", placeId: museum.placeId }, noCurrentActivity: true,
-    };
-    const routes = replanRoutes();
-    expect((await routes.progress(post(`journeys/${journeyId}/progress`, report), journeyId)).status).toBe(201);
-    const command = { basePlanVersion: 1, baseObservationVersion: 1, scope: "rest_of_day", goal: "keep_as_much" };
-    const created = await routes.replan(
-      post(`journeys/${journeyId}/replan`, command, { "idempotency-key": randomUUID() }),
+    const created = await tasks.createTask({
+      id: randomUUID(),
+      kind: "day_replan",
       journeyId,
-    );
-    expect(created.status).toBe(202);
-    const { taskId } = await created.json();
-    expect(await work()).toBe("completed");
-    const done = await view(taskId);
-    expect(done).toMatchObject({
-      kind: "day_replan", journeyId, base: { planVersion: 1, observationVersion: 1 },
-      result: { outcome: "candidate" }, offer: { status: "available" },
+      requestKey: randomUUID(),
+      intentFingerprint: "a".repeat(64),
+      input: { journeyId, basePlanVersion: 1, baseObservationVersion: 1 },
+      createdAt: new Date(t0),
     });
-    if (done.offer?.status !== "available") throw new Error("offer");
-
-    // A newer report after the offer: the stored receipt can no longer overwrite the new state.
-    expect((await routes.progress(post(`journeys/${journeyId}/progress`, {
-      ...report, reportId: randomUUID(), baseObservationVersion: 1, observedAt: "2026-10-16T10:50+08:00",
-      earliestResumeAt: "2026-10-16T10:55+08:00",
-    }), journeyId)).status).toBe(201);
-    const stale = await routes.confirm(
-      post(`journeys/${journeyId}/replan/confirm`, { receipt: done.offer.receipt, acknowledgeUnknowns: true }),
-      journeyId,
-    );
-    expect(stale.status).toBe(409);
-
-    // Cancel while running: the worker stops and the task ends cancelled.
-    const second = await routes.replan(post(`journeys/${journeyId}/replan`, {
-      ...command, baseObservationVersion: 2,
-    }, { "idempotency-key": randomUUID() }), journeyId);
-    const { taskId: running } = await second.json();
-    const claimed = (await tasks.claimNext("test-worker", new Date(t0)))!;
-    expect((await service().cancel(running))?.cancelRequested).toBe(true);
-    expect(await executeTask(claimed, { repository: tasks, checkpointer, now, heartbeatMs: 10 })).toBe("cancelled");
-    expect(await view(running)).toMatchObject({ status: "cancelled", stopReason: "cancelled", offer: null });
+    if (created.status === "intent_conflict") throw new Error("could not create the task");
+    expect(await work()).toBe("failed");
+    expect(await view(created.task.id)).toMatchObject({
+      kind: "day_replan", journeyId, status: "failed", result: null, offer: null,
+      base: { planVersion: 1, observationVersion: 1 },
+    });
     expect((await service().read(randomUUID()))).toBeNull();
   });
 });

@@ -134,6 +134,49 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)("V3.1 outing endpoints", () => {
     expect(steps.rows[0]!.n).toBeGreaterThan(0);
   });
 
+  it("V4.7: saved preferences reach day planning only with OUTING_REVIEW=agent; the default path plans without them", async () => {
+    const { pool } = getSharedJourneyDatabase();
+    const preference = randomUUID();
+    await pool.query(
+      "INSERT INTO preferences (id, user_id, text, category, created_at, updated_at) VALUES ($1, $2, '不吃辣', 'food', $3, $3)",
+      [preference, owner, new Date(NOW)],
+    );
+    const generate = async () => {
+      const notes: (string | undefined)[] = [];
+      const inner = createDayPlanningRunner({ provider: amap as never, model: createDayScriptedModel(), now: () => NOW });
+      const { chat } = services();
+      const plan = createPlanService({
+        userId: owner,
+        environment: ENV,
+        now: () => NOW,
+        repository: () => conversations(),
+        amap: () => amap as never,
+        runner: async () => ({
+          ...inner,
+          run: (problem, options) => {
+            notes.push(problem.requirements.notes);
+            return inner.run(problem, options);
+          },
+        }),
+      });
+      const card = outingCard();
+      const id = await conversation(card);
+      const split = await chat.allocate(id, fingerprint(card)) as { card: { fingerprint: string } };
+      await events<Event>((emit, signal) => plan.outing(id, { fingerprint: split.card.fingerprint }, emit as never, signal));
+      return notes;
+    };
+    vi.stubEnv("OUTING_REVIEW", "single");
+    const single = await generate();
+    expect(single.length).toBeGreaterThan(0);
+    expect(single.some((note) => note?.includes("不吃辣"))).toBe(false);
+    vi.stubEnv("OUTING_REVIEW", "agent");
+    const agent = await generate();
+    expect(agent.length).toBeGreaterThan(0);
+    expect(agent.every((note) => note?.includes("长期偏好：不吃辣"))).toBe(true);
+    vi.stubEnv("OUTING_REVIEW", "single");
+    await pool.query("DELETE FROM preferences WHERE id = $1", [preference]);
+  });
+
   it("save, then move a place to another day: refusals, the change card, and a confirm that saves once", async () => {
     const { chat, plan, save } = services();
     const card = outingCard();
@@ -166,8 +209,39 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)("V3.1 outing endpoints", () => {
     expect(change.messages[0]!.days.map((day) => day.day)).toEqual([1, 2]);
     const confirm = { messageId: change.messages[0]!.id, receipts: change.receipts.map((item) => item.receipt) };
     expect(await plan.confirmOutingChange(id, { ...confirm, receipts: [] })).toMatchObject({ status: "invalid_receipt" });
-    expect(await plan.confirmOutingChange(id, confirm)).toMatchObject({ status: "saved" });
+    // 复核路线的那几秒里对话有了新消息（别的页面发了一条）：出游存了，新的各天仍要写进对话，按最新的条数再写。
+    let raced = false;
+    const racing = createPlanService({
+      userId: owner,
+      environment: ENV,
+      now: () => NOW,
+      amap: () => amap as never,
+      repository: () => {
+        const store = conversations();
+        const appendTurn = store.appendTurn.bind(store);
+        store.appendTurn = async (input) => {
+          if (!raced) {
+            raced = true;
+            await appendTurn({
+              conversationId: id,
+              expectedCount: input.expectedCount,
+              messages: [{ role: "assistant", kind: "notice", body: { text: "别的页面的消息", tone: "info" } }],
+              now: new Date(NOW),
+              newId: randomUUID,
+            });
+          }
+          return appendTurn(input);
+        };
+        return store;
+      },
+    });
+    expect(await racing.confirmOutingChange(id, confirm)).toMatchObject({ status: "saved" });
+    const after = (await conversations().findConversation(id))!;
+    const changed = after.messages.filter((message) => message.kind === "outing_day" && message.body.fromChange);
+    expect(changed.map((message) => message.kind === "outing_day" && message.body.day)).toEqual([1, 2]);
+    expect(after.messages.at(-3)).toMatchObject({ kind: "notice", body: { text: "别的页面的消息" } });
     expect(await plan.confirmOutingChange(id, confirm)).toMatchObject({ status: "already_saved" });
+    expect(await count()).toBe(after.conversation.messageCount);
   });
 
   it("two accounts generating at the same time do not see each other's runs or messages", async () => {

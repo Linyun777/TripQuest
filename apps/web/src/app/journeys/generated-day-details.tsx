@@ -8,16 +8,14 @@ import { DayEditWorkspace } from "./day-edit-workspace";
 import { JourneyProgressWorkspace, type ProgressMember } from "./journey-progress";
 import { readPlanningMapConfig } from "./map-config";
 import { readDayEditConfig } from "./edit-receipt";
-import { readReplanConfig } from "./replan-config";
 import { ReplannedDayView } from "./replan-timeline";
 import { WriteCoordinator } from "./write-coordinator";
 
-export function GeneratedDayDetails({ journey, taskId }: { journey: JourneyDetails; taskId?: string }) {
+export function GeneratedDayDetails({ journey }: { journey: JourneyDetails }) {
   const details = journey.dayDetails;
   if (!details) throw new Error("Generated day details unavailable");
   const isCurrent = journey.version === journey.currentVersion;
   const mapConfig = readPlanningMapConfig();
-  const replanConfig = readReplanConfig();
   const state = dayState(details, journey.activities);
   const placeName = (placeId: string) =>
     state.places.find((item) => item.placeId === placeId)!.selection.place.name;
@@ -39,11 +37,6 @@ export function GeneratedDayDetails({ journey, taskId }: { journey: JourneyDetai
     })),
   ];
   const progress = journey.dayProgress ?? { status: "unreported" as const };
-  const reported = progress.status === "reported"
-    ? new Set([...progress.completedActivityIds, ...progress.skippedActivityIds])
-    : new Set<string>();
-  const fixedAhead = state.future.some((item) =>
-    item.record.activity.role === "fixed" && !reported.has(item.record.activity.activityId));
   return (
     <main className="min-h-dvh bg-[#f7f9f7] px-4 py-6 text-[#21352e] sm:px-6 sm:py-10">
       <div className="mx-auto max-w-3xl">
@@ -128,19 +121,13 @@ export function GeneratedDayDetails({ journey, taskId }: { journey: JourneyDetai
               members={members}
               places={state.places.map((item) => ({ id: item.placeId, name: item.selection.place.name }))}
               progress={progress}
-              saveEnabled={replanConfig.save.enabled}
-              availability={replanConfig.availability}
-              fixedAhead={fixedAhead}
-              mapConfig={mapConfig}
-              initialTaskId={
-                taskId && /^[0-9a-f-]{36}$/i.test(taskId) ? taskId : null
-              }
+              saveEnabled={readDayEditConfig().enabled}
             />
           )}
         </WriteCoordinator>
         <p className="mt-6 rounded-2xl border border-[#eddfd5] bg-[#fff8f1] p-4 text-sm leading-6 text-[#81553e]">
           {isCurrent
-            ? "报告进度只保存事实；调整需要明确确认才会保存为新版本。报告前可修改一处普通活动；旧版只读。"
+            ? "报告进度只保存事实，不改计划。报告前可修改一处普通活动；旧版只读。"
             : "这是只读的历史版本，显示它保存时的安排与依据，不叠加之后的报告。"}
         </p>
         <Link

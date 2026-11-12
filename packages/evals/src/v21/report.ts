@@ -4,7 +4,7 @@ import type { ReviewRow } from "../v32/review-run";
 import { renderLodging } from "../v33/lodging-report";
 import type { LodgingRow } from "../v33/lodging-run";
 import { renderSplitOutings, type SplitOutingRow } from "../v34/split-run";
-import { renderAgentRows, type AgentRow } from "../agent-summary";
+import { renderAgentRows, type AgentRow, type RepairTrace } from "../agent-summary";
 import type { IntakeRow, PlanRow } from "./run";
 import { SHORT_INTAKE_CASES, SHORT_PLAN_CASES } from "./short-dataset";
 import type { ShortRow } from "./short-run";
@@ -17,6 +17,8 @@ import { KNOWLEDGE_HELD_OUT } from "./knowledge-dataset";
 import type { KnowledgeRow } from "./knowledge-run";
 import { renderV29 } from "../v29/report";
 import { renderPicks, type PickRow } from "../v292/picks-run";
+import type { JudgeRow } from "../v47/judge-run";
+import type { RepairRow } from "../v47/repair-run";
 import type { PlayRow } from "../v210/play-run";
 import type { TransferRow } from "../v211/transfer-run";
 import type { AllocationRow } from "../v211/allocation-run";
@@ -24,6 +26,7 @@ import type { OutingRow } from "../v211/outing-run";
 import type { CrossDayRow } from "../v211/cross-day-run";
 import type { RouteRow } from "../v29/route-run";
 import type { ConversationRow } from "../v29/conversation-run";
+import type { ReliabilityRow } from "../v42/reliability-run";
 import type { NotesRow } from "./notes-run";
 
 export interface V21Report {
@@ -47,6 +50,12 @@ export interface V21Report {
     readonly v32?: Readonly<Record<"review", { readonly version: string; readonly digest: string; readonly cases: number }>>;
     readonly v33?: Readonly<Record<"lodging", { readonly version: string; readonly digest: string; readonly cases: number }>>;
     readonly v34?: Readonly<Record<"split", { readonly version: string; readonly digest: string; readonly cases: number }>>;
+    readonly v36?: Readonly<Record<"rides", { readonly version: string; readonly digest: string; readonly cases: number; readonly flow: string }>>;
+    readonly v42?: Readonly<Record<"reliability", { readonly version: string; readonly digest: string; readonly cases: number }>>;
+    readonly v43?: Readonly<Record<"stays", { readonly version: string; readonly digest: string; readonly cases: number }>>;
+    readonly v44?: Readonly<Record<"dates", { readonly version: string; readonly digest: string; readonly cases: number }>>;
+    readonly v47?: Readonly<Partial<Record<"judge" | "repair", { readonly version: string; readonly digest: string; readonly cases: number }>>>;
+    readonly v45?: Readonly<Record<"dates", { readonly version: string; readonly digest: string; readonly cases: number }>>;
   };
   /** V2.5 adjusting a saved trip. */
   readonly adjust?: readonly AdjustRow[];
@@ -58,6 +67,10 @@ export interface V21Report {
   readonly conversations?: readonly ConversationRow[];
   /** V2.9.2 挑地点对照。 */
   readonly picks?: readonly PickRow[];
+  /** V4.7 判断闸门（§4.1）。 */
+  readonly judges?: readonly JudgeRow[];
+  /** V4.7 修复效果（§4.2）。 */
+  readonly repairs?: readonly RepairRow[];
   /** V2.10 各种玩法（云岭市的一日规划）。 */
   readonly play?: readonly PlayRow[];
   /** V2.11 一天里的固定交通（§4.4）。 */
@@ -69,6 +82,8 @@ export interface V21Report {
   /** V3.2 审查评测。 */
   readonly reviews?: readonly ReviewRow[];
   readonly lodgings?: readonly LodgingRow[];
+  /** V4.2 规划可靠性题。 */
+  readonly reliabilities?: readonly ReliabilityRow[];
   /** V3.4 搜索兜底题。 */
   readonly splitOutings?: readonly SplitOutingRow[];
   /** V2.8 knowledge questions. */
@@ -86,6 +101,8 @@ export interface V21Report {
   readonly plan: readonly PlanRow[];
   /** V3.0：每题各 Agent 的运行数、模型请求、tokens、耗时、兜底（live 题）。 */
   readonly agents?: readonly AgentRow[];
+  /** V4.0：审查-修复 Agent 每题的步骤。 */
+  readonly repairTraces?: readonly RepairTrace[];
 }
 
 const pct = (part: number, whole: number) => (whole ? `${Math.round((part / whole) * 100)}%` : "—");

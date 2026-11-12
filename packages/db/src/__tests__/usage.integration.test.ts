@@ -4,7 +4,7 @@ import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createJourneyDatabase, type JourneyDatabaseClient } from "../connection";
 import { requireSafeTestDatabaseUrl } from "../test-database-safety";
-import { setUserDailyLimit, UsageLedger, UsageLimitError } from "../usage";
+import { setUserDailyLimit, UsageLedger, UsageLimitError, UsageUnavailableError } from "../usage";
 import { testUserId } from "./test-users";
 
 config({ path: fileURLToPath(new URL("../../../../.env", import.meta.url)), quiet: true });
@@ -47,6 +47,15 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)("V2.12 daily usage per user and 
     expect(await ledger(bob, env).today()).toEqual(expect.arrayContaining([{ category: "web", used: 1, limit: 10 }]));
     // 模型：每人有上限（缺省 300），全站不限；Jev 缺省关闭。
     await expect(ledger(alice).reserve("jev", "pick-jev", "plan")).rejects.toBeInstanceOf(UsageLimitError);
+  });
+
+  it("a ledger that cannot be reached is not reported as a used-up limit", async () => {
+    // 连不上的库（本机没有监听的端口）：没记上、请求不发，但不能说成“今天用完了”。
+    const down = createJourneyDatabase("postgresql://nobody:nothing@127.0.0.1:1/unreachable_test", { connectionTimeoutMillis: 500 });
+    const failed = await new UsageLedger(down.pool, alice, {}, () => NOW).reserve("model", "model", "chat").catch((error: unknown) => error);
+    await down.close();
+    expect(failed).toBeInstanceOf(UsageUnavailableError);
+    expect(failed).not.toBeInstanceOf(UsageLimitError);
   });
 
   it("concurrent reservations never go past the limit", async () => {

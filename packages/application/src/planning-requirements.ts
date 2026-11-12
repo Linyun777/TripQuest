@@ -173,7 +173,7 @@ export const planningRequirementsSchema = z
     /** 来自对话的用户原话兴趣；保留兴趣 ID，供候选搜索、数量与时段约束追踪。 */
     freeInterests: z.array(freeInterestSchema).max(5).optional(),
     /** “别太累”等愿望仅作模型软目标；不能绕过必去、固定时段或路线硬校验。 */
-    notes: text(200).optional(),
+    notes: text(400).optional(),
     /** 旧版未保存交通偏好时按只步行读取；新建对话的默认推荐由上层显式传入。 */
     travel: travelPreferenceSchema.optional(),
     pace: z.enum(["relaxed", "standard"]),
@@ -321,6 +321,35 @@ export function validatePlanningRequirements(
 function minutes(value: string): number {
   const [hours, minute] = value.split(":").map(Number);
   return hours * 60 + minute;
+}
+
+/** V4.2（stages/V4.2.md §3.1）：固定事项离这一天的开始不到这么多分钟时，这天提前出门。 */
+export const EARLY_FIXED_LEAD_MINUTES = 90;
+/** 提前出门最早到 06:00。 */
+export const EARLIEST_DAY_START = 6 * 60;
+
+/**
+ * V4.2：早上的固定事项（“9 点在博物馆有预约”）离这一天的开始不到 90 分钟时，这天改成从“固定事项开始前 90 分钟”
+ * 开始（最早 06:00），留出从住处 / 起点过去的路程；不早于原来的开始就不改。出游（outingFrames）和日常
+ * （withEarlyStart）共用这一条规则。
+ */
+export function earlyStart<T extends { readonly startsAt: number }>(
+  startsAt: number,
+  fixed: readonly T[],
+): { readonly startsAt: number; readonly fixed: T } | null {
+  const first = [...fixed].sort((a, b) => a.startsAt - b.startsAt)[0];
+  if (!first || first.startsAt - startsAt >= EARLY_FIXED_LEAD_MINUTES) return null;
+  const moved = Math.max(EARLIEST_DAY_START, first.startsAt - EARLY_FIXED_LEAD_MINUTES);
+  return moved < startsAt ? { startsAt: moved, fixed: first } : null;
+}
+
+/** V4.2：日常一日规划的时间窗按 earlyStart 提前（卡片不变；保存时从这份需求重建，前后一致）。 */
+export function withEarlyStart(requirements: PlanningRequirements): PlanningRequirements {
+  const fixed = requirements.visits.flatMap((visit) => (visit.role === "fixed" ? [{ startsAt: minutes(visit.startsAt) }] : []));
+  const early = earlyStart(minutes(requirements.window.startsAt), fixed);
+  if (!early) return requirements;
+  const startsAt = `${String(Math.floor(early.startsAt / 60)).padStart(2, "0")}:${String(early.startsAt % 60).padStart(2, "0")}`;
+  return { ...requirements, window: { ...requirements.window, startsAt } };
 }
 
 /** V2.11：估计的停留最短能缩到多少（这类地点的下限，不高于原估计）；用户说的返回 undefined。 */

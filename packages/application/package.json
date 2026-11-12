@@ -108,6 +108,18 @@
       "types": "./src/outing-allocation.ts",
       "default": "./src/outing-allocation.ts"
     },
+    "./outing-rides": {
+      "types": "./src/outing-rides.ts",
+      "default": "./src/outing-rides.ts"
+    },
+    "./outing-stays": {
+      "types": "./src/outing-stays.ts",
+      "default": "./src/outing-stays.ts"
+    },
+    "./said-dates": {
+      "types": "./src/said-dates.ts",
+      "default": "./src/said-dates.ts"
+    },
     "./outing-trip": {
       "types": "./src/outing-trip.ts",
       "default": "./src/outing-trip.ts"

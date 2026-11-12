@@ -176,3 +176,30 @@ describe("V2.11 splitting an outing into days", () => {
     expect(changed.status === "ok" && changed.draft.outing!.allocation).toBeUndefined();
   });
 });
+
+describe("V4.2 a fixed booking early in the day", () => {
+  it("starts that day 90 minutes before the booking, and the other days keep their window", () => {
+    // 第 2 天 9:00 在博物馆有预约（O07 那样）：以前这天 9 点才从酒店出发，预约永远赶不上。
+    const frames = outingFrames(base({
+      visits: [{ key: "v1", place: museum, role: "fixed", stayMinutes: 120, startsAt: "09:00", endsAt: "11:00", day: 2 }],
+    }));
+    expect(frames.map((frame) => frame.startsAt)).toEqual([9 * 60, 7 * 60 + 30, 9 * 60]);
+    expect(frames[1]!.early).toBe("为赶上 09:00 的博物馆，这天提前出门。");
+    expect(frames[0]!.early).toBeUndefined();
+    // 提前的时间只用来赶路：可用时间仍从 9 点算（20:00 前，扣掉 2 小时预约）。
+    expect(frames[1]!.available).toBe(11 * 60 - 120);
+  });
+
+  it("leaves a booking far enough from the start alone, and never starts before 06:00", () => {
+    const later = outingFrames(base({
+      visits: [{ key: "v1", place: museum, role: "fixed", stayMinutes: 60, startsAt: "10:30", endsAt: "11:30", day: 2 }],
+    }));
+    expect(later[1]!.startsAt).toBe(9 * 60);
+    expect(later[1]!.early).toBeUndefined();
+    const dawn = outingFrames(base({
+      dailyWindow: { startsAt: "07:00", endsAt: "20:00" },
+      visits: [{ key: "v1", place: museum, role: "fixed", stayMinutes: 60, startsAt: "07:00", endsAt: "08:00", day: 2 }],
+    }));
+    expect(dawn[1]!.startsAt).toBe(6 * 60);
+  });
+});

@@ -3,10 +3,8 @@ import {
   createDayPlanningRunner,
   createDayScriptedModel,
 } from "@tripquest/agent/day-planning";
-import { createReplanRunner, createReplanScriptedModel } from "@tripquest/agent/replanning";
 import type { DayDraftConfirmationSnapshot } from "@tripquest/application/day-confirmation";
 import type { DayPlanningProblem } from "@tripquest/application/day-planning";
-import type { DayReplanProblem } from "@tripquest/application/day-replan";
 import {
   PLANNING_TASK_LIMITS,
   type ClaimedPlanningTask,
@@ -23,7 +21,6 @@ export interface ExecuteDependencies {
   readonly provider?: MobilityProvider;
   /** 可注入脚本决策验证边界；默认策略仅依据公开输入生成决策。 */
   readonly draftModel?: Parameters<typeof createDayPlanningRunner>[0]["model"];
-  readonly replanModel?: Parameters<typeof createReplanRunner>[0]["model"];
   readonly heartbeatMs?: number;
   /** 进程关闭时终止运行并保留恢复状态，让后续 Worker 接管。 */
   readonly shutdown?: AbortSignal;
@@ -47,6 +44,11 @@ export async function executeTask(
 ): Promise<"completed" | "failed" | "cancelled" | "abandoned"> {
   const { repository, checkpointer } = dependencies;
   const now = dependencies.now ?? Date.now;
+  // V3.6：途中重排（replan Agent）已删除，不再建这类任务；以前排着的直接记为失败，不运行。
+  if (task.kind !== "day_draft") {
+    const written = await repository.finish(task.id, task.leaseToken, { status: "failed", result: null }, new Date(now()));
+    return written ? "failed" : "abandoned";
+  }
   const controller = new AbortController();
   let lost = false;
   let cancelled = task.cancelRequestedAt !== null;
@@ -86,29 +88,20 @@ export async function executeTask(
   if (cancelled) stop();
   let result: unknown;
   try {
-    if (task.kind === "day_draft") {
-      let snapshot: DayDraftConfirmationSnapshot | null = null;
-      const outcome = await createDayPlanningRunner({
-        provider,
-        model: dependencies.draftModel ?? createDayScriptedModel(),
-        now,
-        thread,
-      }).run(task.input as DayPlanningProblem, {
-        signal: controller.signal,
-        onProgress,
-        onDraftReady(next) {
-          snapshot = next;
-        },
-      });
-      result = { outcome, snapshot } satisfies DraftTaskResult;
-    } else {
-      result = await createReplanRunner({
-        provider,
-        model: dependencies.replanModel ?? createReplanScriptedModel(),
-        now,
-        thread,
-      }).run(task.input as DayReplanProblem, { signal: controller.signal, onProgress });
-    }
+    let snapshot: DayDraftConfirmationSnapshot | null = null;
+    const outcome = await createDayPlanningRunner({
+      provider,
+      model: dependencies.draftModel ?? createDayScriptedModel(),
+      now,
+      thread,
+    }).run(task.input as DayPlanningProblem, {
+      signal: controller.signal,
+      onProgress,
+      onDraftReady(next) {
+        snapshot = next;
+      },
+    });
+    result = { outcome, snapshot } satisfies DraftTaskResult;
   } finally {
     clearTimeout(deadline);
     clearInterval(heartbeat);
@@ -116,7 +109,7 @@ export async function executeTask(
   }
   // 失去租约或正常关闭时保留检查点，不把进程退出误写成业务失败。
   if (lost || (dependencies.shutdown?.aborted && !cancelled && !overdue)) return "abandoned";
-  const outcome = task.kind === "day_draft" ? (result as DraftTaskResult).outcome : result;
+  const outcome = (result as DraftTaskResult).outcome;
   const runStatus = (outcome as { status: string }).status;
   // 用户取消和整体截止时间优先于图返回的状态，避免恰好完成时把已取消任务重新显示为成功。
   const status = cancelled ? "cancelled" as const

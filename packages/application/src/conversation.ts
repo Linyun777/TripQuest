@@ -108,6 +108,17 @@ export const outingTransportSchema = z.strictObject({
   arriveAt: planningTimeSchema.nullable(),
   arriveDay: z.enum(["same", "next"]),
   overnightConfirmed: z.literal(true).optional(),
+  /**
+   * V3.6：代码补的部分（卡片上写“暂定”，stages/V3.6.md §3.2–3.3）。ride 是这一趟是代码补的；from / to 是这一端的车站
+   * 是按高德结果暂定的，others 是“换一个”的候选（最多 2 个）。用户改了哪部分，哪部分就是用户的，不再标。
+   */
+  suggested: z.strictObject({
+    ride: z.literal(true).optional(),
+    /** V4.3：这趟的日子是代码按“住在哪”挪的（stages/V4.3.md §3.4）。 */
+    day: z.literal(true).optional(),
+    from: z.strictObject({ others: z.array(draftChoiceSchema).max(2) }).optional(),
+    to: z.strictObject({ others: z.array(draftChoiceSchema).max(2) }).optional(),
+  }).optional(),
 });
 export type OutingTransport = z.infer<typeof outingTransportSchema>;
 
@@ -120,16 +131,27 @@ export const outingDraftSchema = z.strictObject({
   dailyWindow: z.strictObject({ startsAt: planningTimeSchema, endsAt: planningTimeSchema }),
   /**
    * 第 night 晚住哪；place 为空是还没定；onBoard 是这一晚在过夜交通上（不能再填住处）。V3.3：source 是 suggested 时
-   * 是系统按高德结果暂定的（卡片上写“暂定”，用户可以换）；不写就是用户给的。
+   * 是系统按高德结果暂定的（卡片上写“暂定”，用户可以换）；不写就是用户给的。V3.6：others 是暂定时没选上的候选
+   * （开始规划前把等用户选的先取第一个，其余留着“换一个”）。
    */
   lodging: z.array(z.strictObject({
     night: dayNumber,
     place: draftPlaceSchema.nullable(),
     onBoard: z.literal(true).optional(),
     source: z.literal("suggested").optional(),
+    others: z.array(draftChoiceSchema).max(2).optional(),
   })).max(DRAFT_LIMITS.outingDays - 1),
   /** V3.3：只说了区域的住宿要求（“住春熙路附近”），由代码从兴趣里认出来；暂定住处在那一带找。 */
   lodgingAreas: z.array(z.strictObject({ text: text(DRAFT_LIMITS.lodgingAreaChars) })).max(DRAFT_LIMITS.lodgingAreas).optional(),
+  /**
+   * V4.3：哪几晚住在哪个城市（stages/V4.3.md §3.1），只存城市编码和名称。由代码从用户原话认出来（source said）；
+   * 有住处的那晚以住处的城市为准。
+   */
+  stays: z.array(z.strictObject({
+    nights: z.array(dayNumber).min(1).max(DRAFT_LIMITS.outingDays - 1),
+    city: z.strictObject({ adcode: cityCode, name: text(40) }),
+    source: z.literal("said").optional(),
+  })).max(DRAFT_LIMITS.outingDays - 1).optional(),
   transports: z.array(outingTransportSchema).max(DRAFT_LIMITS.transports),
   /**
    * V2.11 分到各天（§3.6）：每天去哪（地点 key、兴趣 id）和一句理由；problems 是代码检查发现的问题（用户移动后
@@ -184,6 +206,13 @@ export const requirementsDraftSchema = z.strictObject({
    */
   mode: z.enum(["short", "outing"]).optional(),
   outing: outingDraftSchema.optional(),
+  /**
+   * V4.4：用户说过的日期（stages/V4.4.md §3.1），由代码从原话认出来（日常只有 from）；只说了出发或回来那天的，另一头为空。
+   * 模型在用户没说新日期的一轮里改了日期，代码打回、仍改则改回。datesGuessed：卡片上的日期是模型定的（用户没说过哪天），
+   * 卡片上写“暂定”。补丁不能改这两项。
+   */
+  saidDates: z.strictObject({ from: z.iso.date().nullable(), to: z.iso.date().nullable() }).optional(),
+  datesGuessed: z.literal(true).optional(),
 });
 export type RequirementsDraft = z.infer<typeof requirementsDraftSchema>;
 
@@ -294,6 +323,8 @@ export const draftPatchSchema = z.strictObject({
   dailyWindow: z.strictObject({ startsAt: planningTimeSchema, endsAt: planningTimeSchema }).optional(),
   /** V3.3：去掉只说了区域的住宿要求（按原话）。 */
   removeLodgingAreas: z.array(text(DRAFT_LIMITS.lodgingAreaChars)).max(DRAFT_LIMITS.lodgingAreas).optional(),
+  /** V4.3：去掉“住在哪”里包含这几晚的那几行（卡片上删）。 */
+  removeStays: z.array(dayNumber).max(DRAFT_LIMITS.outingDays - 1).optional(),
   /** 给某几晚设住处（null 是还没定）。 */
   setLodging: z.array(z.strictObject({
     nights: z.array(dayNumber).min(1).max(DRAFT_LIMITS.outingDays - 1),
@@ -584,11 +615,13 @@ export function applyDraftPatch(
   // 选择只能落在当前等待中的 choices；模型的序号和页面的外部 ID 都不能越出这批候选。
   for (const pick of patch.choose ?? []) {
     const { target } = pick;
+    // V3.6：暂定的车站也能换成它的候选（卡片上的“换一个”）。
     const current = chooseCurrent(next, target);
-    if (!current || current.status !== "choose") return { status: "invalid", code: "unknown_choice" };
+    const choices = current?.status === "choose" ? current.choices : guessedOthers(next, target);
+    if (!choices.length) return { status: "invalid", code: "unknown_choice" };
     const choice = "option" in pick
-      ? current.choices[pick.option - 1]
-      : current.choices.find((item) => item.externalId === pick.externalId);
+      ? choices[pick.option - 1]
+      : choices.find((item) => item.externalId === pick.externalId);
     if (!choice) return { status: "invalid", code: "unknown_choice" };
     const bound: DraftPlace = { status: "bound", externalId: choice.externalId, name: choice.name, ...(choice.city ? { city: choice.city } : {}) };
     setChosen(next, target, bound);
@@ -870,7 +903,15 @@ export const messageBodySchemas = {
       fix: suggestionFixSchema,
       text: text(80),
       status: z.enum(["pending", "adopted", "dismissed"]),
-    })).min(1).max(12),
+      /** V4.0：这条建议试排的结果（“已试排：……”，审查-修复 Agent 给的才有）。 */
+      tried: text(120).optional(),
+    })).max(12),
+    /** V4.7：“这趟符合你的要求吗”：一句总评和逐条清单（只有说明，不带用户原话、分数；没有判断结果时没有这一项）。 */
+    assessment: z.strictObject({
+      summary: text(200),
+      items: z.array(z.strictObject({ text: text(80), status: z.enum(["met", "partly", "unmet", "unknown"]), note: z.string().max(120) })).max(20),
+      issues: z.array(z.strictObject({ day: z.number().int().min(1).max(7), severity: z.enum(["minor", "major"]), note: z.string().max(120) })).max(8),
+    }).optional(),
   }),
   notice: z.strictObject({
     text: text(300),
@@ -1080,7 +1121,7 @@ type PlaceInput = z.infer<typeof placeInputSchema>;
 /** V2.11：补丁里有没有出游才有的字段（日常卡片不接受）。 */
 function usesOutingFields(patch: DraftPatch): boolean {
   const own = [
-    "dates", "startAt", "endAt", "dailyWindow", "setLodging", "removeLodgingAreas", "addTransports", "updateTransports",
+    "dates", "startAt", "endAt", "dailyWindow", "setLodging", "removeLodgingAreas", "removeStays", "addTransports", "updateTransports",
     "removeTransports", "confirmOvernight", "moveToDay", "noDriving",
   ] as const;
   return own.some((field) => patch[field] !== undefined) ||
@@ -1102,9 +1143,14 @@ function applyOutingPatch(
 ): PatchError | null {
   if (patch.dates !== undefined) {
     outing.dates = patch.dates;
-    // 日期改短了，超出的那几晚住处一起去掉。
+    // 日期改短了，超出的那几晚住处、“住在哪”一起去掉。
     const days = outingDays(outing);
     if (days) outing.lodging = outing.lodging.filter((item) => item.night < days);
+    if (days && outing.stays) {
+      const stays = outing.stays.map((item) => ({ ...item, nights: item.nights.filter((night) => night < days) })).filter((item) => item.nights.length);
+      if (stays.length) outing.stays = stays;
+      else delete outing.stays;
+    }
   }
   if (patch.startAt !== undefined) outing.startAt = patch.startAt;
   if (patch.endAt !== undefined) outing.endAt = patch.endAt;
@@ -1144,6 +1190,7 @@ function applyOutingPatch(
     if (change.departAt !== undefined) item.departAt = change.departAt;
     if (change.arriveAt !== undefined) item.arriveAt = change.arriveAt;
     item.arriveDay = change.arriveDay ?? arrivalDay(item.departAt, item.arriveAt, item.arriveDay);
+    ownRide(item, (["from", "to"] as const).filter((field) => change[field] !== undefined));
     // 时间、日期或到达哪天改了，过夜要重新确认。
     if (change.day !== undefined || change.departAt !== undefined || change.arriveAt !== undefined || change.arriveDay !== undefined) {
       delete item.overnightConfirmed;
@@ -1160,14 +1207,15 @@ function applyOutingPatch(
     const departAt = input.departAt ?? null;
     const arriveAt = input.arriveAt ?? null;
     // 同一天同一种方式、起止站不冲突（原来空着或相同）的，是在补全原来那段，不另加一段（O06：先加了两段空的，
-    // 查到车站后又加了两段）。同一天往返两段高铁起止站不同，照样是两段。
-    const same = (left: DraftPlace | null, right: DraftPlace | null) =>
-      !left || !right || (left.status === "bound" && right.status === "bound" && left.externalId === right.externalId);
+    // 查到车站后又加了两段）。同一天往返两段高铁起止站不同，照样是两段。V3.6：代码暂定的车站也算空着，用户说的车站换掉它。
+    const same = (left: DraftPlace | null, right: DraftPlace | null, guessed: boolean) =>
+      guessed || !left || !right || (left.status === "bound" && right.status === "bound" && left.externalId === right.externalId);
     const earlier = outing.transports.find((item) => item.day === input.day && item.mode === input.mode &&
-      same(item.from, from) && same(item.to, to));
+      same(item.from, from, !!item.suggested?.from) && same(item.to, to, !!item.suggested?.to));
     if (earlier) {
       earlier.from = from ?? earlier.from;
       earlier.to = to ?? earlier.to;
+      ownRide(earlier, [...(from ? ["from" as const] : []), ...(to ? ["to" as const] : [])]);
       earlier.departAt = departAt ?? earlier.departAt;
       earlier.arriveAt = arriveAt ?? earlier.arriveAt;
       earlier.arriveDay = input.arriveDay ?? arrivalDay(earlier.departAt, earlier.arriveAt, earlier.arriveDay);
@@ -1195,6 +1243,11 @@ function applyOutingPatch(
     const areas = (outing.lodgingAreas ?? []).filter((item) => !patch.removeLodgingAreas!.includes(item.text));
     if (areas.length) outing.lodgingAreas = areas;
     else delete outing.lodgingAreas;
+  }
+  if (patch.removeStays?.length) {
+    const stays = (outing.stays ?? []).filter((item) => !item.nights.some((night) => patch.removeStays!.includes(night)));
+    if (stays.length) outing.stays = stays;
+    else delete outing.stays;
   }
   if (patch.noDriving?.length) outing.noDriving = [...new Set([...(outing.noDriving ?? []), ...patch.noDriving])].sort((a, b) => a - b);
   // 最后一天的过夜交通（夜车回家）不占行程里的哪一晚。
@@ -1240,7 +1293,20 @@ function whereabouts(outing: OutingDraft): string {
   return JSON.stringify([
     outing.dates,
     outing.transports.map((item) => [item.day, id(item.from), id(item.to), item.arriveDay]).sort(),
+    // V4.3：“住在哪”变了，每晚的城市跟着变。
+    (outing.stays ?? []).map((item) => [item.nights, item.city.adcode]),
   ]);
+}
+
+/** V3.6：用户改了这趟交通：改了的那一端不再是暂定的，这一趟也不再算代码补的。 */
+function ownRide(item: OutingTransport, ends: readonly ("from" | "to")[]) {
+  if (!item.suggested) return;
+  const rest = { ...item.suggested };
+  delete rest.ride;
+  delete rest.day;
+  for (const end of ends) delete rest[end];
+  if (Object.keys(rest).length) item.suggested = rest;
+  else delete item.suggested;
 }
 
 /** 没说到达哪天时：到达时刻早于出发时刻就是第二天到（夜车、红眼航班）。 */
@@ -1262,18 +1328,35 @@ function chooseCurrent(draft: RequirementsDraft, target: string): DraftPlace | n
   return draft.visits.find((visit) => visit.key === target)?.place;
 }
 
+/** V3.6：暂定车站、暂定住处的候选（目标是 t1:to、n1 这类，这一处是代码暂定的）。 */
+function guessedOthers(draft: RequirementsDraft, target: string): readonly z.infer<typeof draftChoiceSchema>[] {
+  if (/^n\d$/.test(target)) {
+    const night = draft.outing?.lodging.find((item) => item.night === Number(target.slice(1)));
+    return night?.source === "suggested" ? night.others ?? [] : [];
+  }
+  const leg = /^(t\d{1,2}):(from|to)$/.exec(target);
+  const item = leg ? draft.outing?.transports.find((entry) => entry.id === leg[1]) : undefined;
+  return item?.suggested?.[leg![2] as "from" | "to"]?.others ?? [];
+}
+
 function setChosen(draft: RequirementsDraft, target: string, place: DraftPlace) {
   if (target === "start" || target === "end") {
     draft[target] = place;
     return;
   }
   if (/^n\d$/.test(target)) {
-    draft.outing!.lodging.find((item) => item.night === Number(target.slice(1)))!.place = place;
+    // 用户选的就是用户的：不再标暂定，候选也不留。
+    const night = draft.outing!.lodging.find((item) => item.night === Number(target.slice(1)))!;
+    night.place = place;
+    delete night.source;
+    delete night.others;
     return;
   }
   const leg = /^(t\d{1,2}):(from|to)$/.exec(target);
   if (leg) {
-    draft.outing!.transports.find((item) => item.id === leg[1])![leg[2] as "from" | "to"] = place;
+    const item = draft.outing!.transports.find((entry) => entry.id === leg[1])!;
+    item[leg[2] as "from" | "to"] = place;
+    ownRide(item, [leg[2] as "from" | "to"]);
     return;
   }
   draft.visits.find((visit) => visit.key === target)!.place = place;

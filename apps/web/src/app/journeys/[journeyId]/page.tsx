@@ -14,7 +14,7 @@ import { pageUser } from "../../auth/session";
 
 interface JourneyPageProps {
   readonly params: Promise<{ journeyId: string }>;
-  readonly searchParams: Promise<{ saved?: string; version?: string; task?: string }>;
+  readonly searchParams: Promise<{ saved?: string; version?: string }>;
 }
 
 export const metadata: Metadata = {
@@ -24,7 +24,7 @@ export const metadata: Metadata = {
 
 export default async function JourneyPage({ params, searchParams }: JourneyPageProps) {
   const { journeyId } = await params;
-  const { saved, version: versionText, task } = await searchParams;
+  const { saved, version: versionText } = await searchParams;
   const version = versionText === undefined ? undefined : Number(versionText);
   if (version !== undefined && (!Number.isSafeInteger(version) || version < 1)) notFound();
   if (!isJourneyId(journeyId)) notFound();
@@ -59,7 +59,7 @@ export default async function JourneyPage({ params, searchParams }: JourneyPageP
     return <RealDayDetails journey={journey} userId={user.id} conversationId={conversationId} currentVersion={currentVersion} />;
   }
   if (journey.creationKind === "generated_day") {
-    return <GeneratedDayDetails journey={journey} taskId={task} />;
+    return <GeneratedDayDetails journey={journey} />;
   }
   if (version !== undefined) notFound();
   return (

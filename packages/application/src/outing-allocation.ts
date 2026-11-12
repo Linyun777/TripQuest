@@ -1,6 +1,7 @@
 import { straightMeters } from "./leg-choice";
 import { KIND_TYPICAL_STAYS, kindOfCategory, type PlaceKind } from "./place-kinds";
 import {
+  earlyStart,
   estimatedFloor,
   SLOT_MIN_OVERLAP_MINUTES,
   slotOverlapMinutes,
@@ -59,6 +60,8 @@ export interface OutingPlanInput {
   readonly noDriving?: readonly number[];
   /** V3.3：只说了区域的住宿要求（“春熙路”），暂定住处在那一带找。 */
   readonly lodgingAreas?: readonly { readonly text: string }[];
+  /** V4.3：哪几晚住在哪个城市（卡片上的“住在哪”，城市编码）。 */
+  readonly stays?: readonly { readonly nights: readonly number[]; readonly city: string }[];
 }
 
 /** 一天的框架：起止地点、起止时刻、当天的固定交通、扣掉交通和固定事项后的可用分钟数、经过的城市。 */
@@ -89,6 +92,8 @@ export interface DayFrame {
   readonly anchors: readonly PlanningPlace[];
   /** V3.3：这一晚住处没定时，终点按什么估计（方案上说明）。 */
   readonly unsettled?: string;
+  /** V4.2：为赶上早上的固定事项这天提前出门（方案上说明）。 */
+  readonly early?: string;
 }
 
 export interface Allocation {
@@ -121,8 +126,15 @@ export function outingFrames(input: OutingPlanInput): DayFrame[] {
     const rides = input.transports.filter((item) => item.day === day);
     const arrived = input.transports.find((item) => item.day === day - 1 && item.arriveDay === "next");
     const before = day === 1 ? input.start.place : arrived ? arrived.to : lodgingPlace(input, day - 1) ?? previousEnd;
-    const opening = arrived ? timeTransfer(arrived).arriveAt
+    const usual = arrived ? timeTransfer(arrived).arriveAt
       : day === 1 && input.start.at ? minutes(input.start.at) : minutes(input.dailyWindow.startsAt);
+    // V4.2（stages/V4.2.md §3.1）：按每天的时间窗开始的一天，早上有固定事项、来不及过去时提前出门；
+    // 夜车到达、用户说了几点出发的不动。
+    const fixedToday = input.visits.flatMap((visit) => visit.role === "fixed" && visit.day === day && visit.startsAt
+      ? [{ startsAt: minutes(visit.startsAt), name: visit.place.place.name }]
+      : []);
+    const early = !arrived && !(day === 1 && input.start.at) ? earlyStart(usual, fixedToday) : null;
+    const opening = early?.startsAt ?? usual;
     // 第一天从车站坐车出发、没说几点出发：按车次估计的出发时刻开始这一天（长途最早 7 点走，不被 9 点的时间窗卡住）。
     const leaveEarly = day === 1 && !input.start.at;
     const transfers = timeTransfers(rides, before, opening, leaveEarly);
@@ -165,7 +177,8 @@ export function outingFrames(input: OutingPlanInput): DayFrame[] {
       startsAt,
       endsAt,
       transfers,
-      available: Math.max(0, endsAt - startsAt - busy - fixed),
+      // 提前出门多出来的时间只用来赶路，可用时间仍从原来的开始算。
+      available: Math.max(0, endsAt - (early ? Math.max(startsAt, usual) : startsAt) - busy - fixed),
       parts: pieces.map((piece) => ({
         city: piece.city, start: piece.start, end: piece.end, startsAt: piece.startsAt, endsAt: piece.endsAt,
         minutes: Math.max(0, piece.endsAt - piece.startsAt - fixedIn(piece.startsAt, piece.endsAt)),
@@ -173,6 +186,7 @@ export function outingFrames(input: OutingPlanInput): DayFrame[] {
       cities: [...new Set(anchors.flatMap((place) => (place.place.cityAdcode ? [place.place.cityAdcode] : [])))],
       anchors,
       ...(unsettled ? { unsettled } : {}),
+      ...(early ? { early: `为赶上 ${clock(early.fixed.startsAt)} 的${early.fixed.name.slice(0, 30)}，这天提前出门。` } : {}),
     });
   }
   return frames;
@@ -242,7 +256,11 @@ export function lodgingSegments(input: OutingPlanInput, allocation?: Allocation)
     const day = index + 1;
     const rides = input.transports.filter((ride) => ride.day === day);
     const landed = rides.filter((ride) => ride.arriveDay !== "next").at(-1)?.to.place.cityAdcode;
-    const city = value === "onBoard" ? undefined : value ? value.place.cityAdcode : landed ?? mainCity(input, allocation, day) ?? previous;
+    // V4.3（stages/V4.3.md §3.3）：住处 → 住在哪 → 这天坐车到达的城市 → 这天分到的地点 → 前一晚。
+    const stayed = input.stays?.find((item) => item.nights.includes(day))?.city;
+    const city = value === "onBoard" ? undefined
+      : value ? value.place.cityAdcode
+        : stayed ?? landed ?? mainCity(input, allocation, day) ?? previous;
     // 过夜车上的那晚之后，人在这趟车的到达城市。
     previous = value === "onBoard" ? rides.find((ride) => ride.arriveDay === "next")?.to.place.cityAdcode ?? previous : city ?? previous;
     return { night: day, value, city };

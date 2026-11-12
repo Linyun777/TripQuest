@@ -162,9 +162,9 @@ export function RequirementsCard({
                 onChange={(event) => event.target.value && void edit({ date: event.target.value })}
                 className={fieldClass}
               />
-            ) : (
-              card.dateLabel ?? <Missing />
-            )}
+            ) : card.dateLabel ? (
+              <>{card.dateLabel}{card.dateGuessed && <Guessed />}</>
+            ) : <Missing />}
           </Fact>
           <Fact icon={<Clock3 />} label="时段">
             {live ? (
@@ -228,6 +228,7 @@ export function RequirementsCard({
             onChoose={(target, placeId) => onChoosePlace?.(target, placeId)}
             onConfirm={onEdit ? (id) => void edit({ confirmOvernight: [id] }) : undefined}
             onRemoveArea={live ? (area) => void edit({ removeLodgingAreas: [area] }) : undefined}
+            onRemoveStay={live ? (nights) => void edit({ removeStays: [...nights] }) : undefined}
           />
         )}
 
@@ -365,6 +366,11 @@ function Missing() {
   return <span className="text-ink-faint">待补充</span>;
 }
 
+/** V4.4：日期是系统定的（用户没说哪天）。 */
+function Guessed() {
+  return <span className="text-ink-faint"> · 暂定（可改）</span>;
+}
+
 const TRANSPORT_WORD = { train: "高铁", flight: "航班", other: "交通" } as const;
 
 /** V2.11 出游：日期范围和每天出门、回住处的时间。 */
@@ -372,7 +378,7 @@ function OutingFacts({ outing }: { outing: OutingCardView }) {
   return (
     <div className="grid grid-cols-2 gap-2.5">
       <Fact icon={<CalendarDays />} label="日期">
-        {outing.dates?.label ?? <Missing />}
+        {outing.dates ? <>{outing.dates.label}{outing.dates.guessed && <Guessed />}</> : <Missing />}
       </Fact>
       <Fact icon={<Clock3 />} label="每天">
         <span className="tabular">{outing.dailyWindow.startsAt} – {outing.dailyWindow.endsAt}</span>
@@ -390,13 +396,17 @@ function OutingStays({
   onChoose,
   onConfirm,
   onRemoveArea,
+  onRemoveStay,
 }: {
   outing: OutingCardView;
   onChoose: (target: string, placeId: string) => void;
   onConfirm?: (id: string) => void;
   onRemoveArea?: (area: string) => void;
+  onRemoveStay?: (nights: readonly number[]) => void;
 }) {
-  if (!outing.lodging.length && !outing.transports.length) return null;
+  const hints = outing.rideHints ?? [];
+  const stays = outing.stays ?? [];
+  if (!outing.lodging.length && !outing.transports.length && !hints.length) return null;
   const areas = outing.lodgingAreas ?? [];
   const name = (place: OutingCardView["transports"][number]["from"]) => (place.status === "bound" ? place.name : "车站待定");
   return (
@@ -407,7 +417,9 @@ function OutingStays({
             {item.mode === "flight" ? <Plane /> : <TrainFront />}
           </span>
           <div className="min-w-0 flex-1 text-[15px]">
-            <p className="text-xs text-ink-faint">第 {item.day} 天 · {TRANSPORT_WORD[item.mode]}</p>
+            <p className="text-xs text-ink-faint">
+              第 {item.day} 天 · {TRANSPORT_WORD[item.mode]}{item.suggested?.day ? " · 日子按住宿暂定（可改）" : item.suggested ? " · 暂定（可改）" : ""}
+            </p>
             <p className="mt-0.5">
               {name(item.from)} <span className="tabular">{item.departAt ?? ""}</span>
               <span className="text-ink-faint"> → </span>
@@ -422,6 +434,12 @@ function OutingStays({
             )}
             {item.from.status === "choose" && <PlaceValue place={item.from} onChoose={(placeId) => onChoose(`${item.id}:from`, placeId)} />}
             {item.to.status === "choose" && <PlaceValue place={item.to} onChoose={(placeId) => onChoose(`${item.id}:to`, placeId)} />}
+            {(["from", "to"] as const).map((end) => {
+              const others = item.suggested?.[end] ?? [];
+              return others.length > 0 && (
+                <SwapStation key={end} label={end === "from" ? "出发站" : "到达站"} choices={others} onChoose={(placeId) => onChoose(`${item.id}:${end}`, placeId)} />
+              );
+            })}
             {item.overnight && (
               item.confirmed ? (
                 <p className="mt-1 text-xs text-lake-600">已确认第 {item.day} 晚在{item.mode === "flight" ? "飞机" : "车"}上过夜</p>
@@ -440,6 +458,29 @@ function OutingStays({
           </div>
         </div>
       ))}
+      {hints.map((hint) => (
+        <p key={hint} className="pl-11 text-xs text-sun-700">{hint}</p>
+      ))}
+      {stays.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5 pl-11 text-xs text-ink-soft">
+          <span>住在哪</span>
+          {stays.map((stay) => (
+            <span key={stay.text} className="inline-flex items-center gap-1 rounded-full bg-sunken px-2.5 py-0.5">
+              {stay.text}
+              {onRemoveStay && (
+                <button
+                  type="button"
+                  aria-label={`去掉“${stay.text}”`}
+                  onClick={() => onRemoveStay(stay.nights)}
+                  className="-mr-1 grid size-4 place-items-center rounded-full hover:bg-line"
+                >
+                  <X className="size-3" />
+                </button>
+              )}
+            </span>
+          ))}
+        </div>
+      )}
       {outing.lodging.map((night) => (
         <div key={night.night} className="flex gap-3">
           <span className="mt-0.5 grid size-8 shrink-0 place-items-center rounded-full bg-sunken text-ink-soft [&_svg]:size-4">
@@ -457,6 +498,9 @@ function OutingStays({
               </p>
             ) : (
               <PlaceValue place={night.place} onChoose={(placeId) => onChoose(`n${night.night}`, placeId)} />
+            )}
+            {night.others && night.others.length > 0 && (
+              <SwapStation label="住处" choices={night.others} onChoose={(placeId) => onChoose(`n${night.night}`, placeId)} />
             )}
           </div>
         </div>
@@ -809,6 +853,29 @@ function PlaceValue({
           </button>
         ))}
       </div>
+    </div>
+  );
+}
+
+/** V3.6：暂定车站、住处的“换一个”：点一个就换成它（同等用户选时的选择，目标 t1:to、n1）。 */
+function SwapStation({ label, choices, onChoose }: { label: string; choices: readonly { placeId: string; name: string }[]; onChoose: (placeId: string) => void }) {
+  return (
+    <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs text-ink-soft">
+      <span>{label}换一个</span>
+      {choices.map((choice) => (
+        <button
+          key={choice.placeId}
+          type="button"
+          onClick={() => onChoose(choice.placeId)}
+          className={cn(
+            "rounded-full border border-line bg-surface px-2.5 py-1 transition-colors",
+            "hover:border-lake-500 hover:bg-lake-50",
+            "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-lake-600",
+          )}
+        >
+          {choice.name}
+        </button>
+      ))}
     </div>
   );
 }

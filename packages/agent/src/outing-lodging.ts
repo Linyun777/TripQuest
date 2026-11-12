@@ -11,7 +11,8 @@ import type { GeneratedDay, OutingInput } from "./outing-generate";
  * 进城的车站、这一晚的终点；在中心点附近搜
  * “酒店”（先 3 公里，没有再 10 公里），只留住宿类（高德分类码 10 开头）、在这个城市的，最近的作为暂定，
  * 再按距离留 2 个作为候选。找不到就不定（方案上照实说按哪里估计），不编造。同一段里用户给了其中一晚的，
- * 跟它同一家，不搜。
+ * 跟它同一家，不搜。V4.3：卡片上说了这几晚住在这个城市（“去苏州住两晚”）、上面的中心点一个都没有时，在这个城市里
+ * 按相关度搜“酒店”，取前几家住宿类的。
  */
 export interface LodgingChoice {
   readonly nights: readonly number[];
@@ -20,7 +21,7 @@ export interface LodgingChoice {
   readonly place: PlanningPlace | null;
   /** follow：跟用户给的那晚同一家；search：按中心点搜到的。 */
   readonly from: "follow" | "search";
-  readonly center?: "area" | "visits" | "interests" | "station" | "end";
+  readonly center?: "area" | "visits" | "interests" | "station" | "end" | "city";
   /** 中心点用了哪个区域（原话里的地名，或对话记成住处的那个地方的名字）。 */
   readonly area?: string;
   /** 卡片上这几晚原来是个区域（不是住宿），定下的这家替换它，区域记到“住处区域”里。 */
@@ -59,7 +60,16 @@ export async function chooseLodging(
     }
     const center = await centerOf(segment, input, allocation, frames, provider, signal, areas);
     if (!center) {
-      choices.push({ nights: segment.nights, city: segment.city, place: null, from: "search", candidates: [] });
+      const stayed = segment.city && input.stays?.some((item) => item.city === segment.city && item.nights.some((night) => segment.nights.includes(night)));
+      const found = stayed ? await cityLodging(segment.city!, provider, signal) : [];
+      choices.push({
+        nights: segment.nights,
+        city: segment.city,
+        place: found[0] ?? null,
+        from: "search",
+        ...(found.length ? { center: "city" as const } : {}),
+        candidates: found.slice(1, 1 + CANDIDATES),
+      });
       continue;
     }
     const found = await nearbyLodging(center.point, segment.city, provider, signal);
@@ -126,6 +136,16 @@ async function centerOf(
   }
   const end = frames.find((frame) => frame.day === segment.nights[0])?.end;
   return end && end.place.cityAdcode === segment.city ? { point: end.place.location, source: "end" } : null;
+}
+
+/** V4.3：这个城市里按相关度的住宿（住宿类、在这个城市的；只存编号和名称，D-045 / D-046）。 */
+async function cityLodging(city: string, provider: Search, signal: AbortSignal): Promise<PlanningPlace[]> {
+  const reply = await provider.searchPlaces({ query: "酒店", scope: { kind: "city", cityAdcode: city }, limit: 10 }, { signal }).catch(() => null);
+  if (reply?.status !== "ok") return [];
+  return reply.data.items
+    .filter((item) => item.cityAdcode === city && isLodgingCategory(item.categoryCode))
+    .slice(0, 1 + CANDIDATES)
+    .map((item) => ({ place: item, evidence: reply.evidence }));
 }
 
 function averageOf(points: readonly GeoPoint[]): GeoPoint {

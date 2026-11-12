@@ -10,15 +10,14 @@
 pnpm eval:baseline
 pnpm eval:agent -- --mode scripted
 pnpm eval:feedback
-pnpm eval:planning
 pnpm eval:v21 -- --help
 pnpm test:evals
 ```
 
 - `src/cases/dataset.ts`、`src/runner.ts`、`src/scoring.ts`：基础候选校验与基线评测。
 - `src/agent-cli.ts`、`feedback-cli.ts`：有界路线调查、反馈与澄清。
-- `src/s54/`：一日规划与调整的故障注入、人工预期及独立复核。
 - `src/v21-cli.ts` 与各版本目录：对话、交通、出游、知识库、分流和专门 Agent 题集。版本号是数据集标识。
+- `src/v36/`、`v42/`–`v47/`：交通补全、固定事项可达性、多城住宿、日期保护、整体判断和审查修复题集。
 
 用 `--help` 查看各命令的筛选参数。输出写入根 `eval-results/`，包含机器可读与 Markdown 报告。人工预期与运行结果分开，合成路线、地点、时钟和故障可固定。
 

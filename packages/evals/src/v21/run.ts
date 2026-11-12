@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { RequirementsDraft } from "@tripquest/application/conversation";
 import { createDayPlanningProblem, type DayDraft, type DayPlanningResult } from "@tripquest/application/day-planning";
 import { withParking } from "@tripquest/application/leg-choice";
+import { withEarlyStart } from "@tripquest/application/planning";
 import {
   confirmationInput,
   fingerprintRequirements,
@@ -115,6 +116,9 @@ export interface PlanRow {
   readonly legModes: readonly string[];
   readonly routeRequests: number;
   readonly stops: readonly string[];
+  /** V4.2：方案里各站的地点编号、没排进去的“想去”地点和原因（规划可靠性题判分用）。 */
+  readonly chosen?: readonly string[];
+  readonly omitted?: readonly { readonly externalId: string; readonly reason: string }[];
   readonly fallback: boolean;
   readonly failureCode?: string;
   /** 以人工预设意图核对每个兴趣的站数和时段，不由解析后的需求反推标准答案。 */
@@ -225,10 +229,12 @@ export async function runPlanCase(
 ): Promise<PlanRow> {
   const world = new V21World(FORECASTS[item.forecast]);
   const forecast = FORECASTS[item.forecast].find((day) => day.date === item.date);
+  // V4.2：同产品的日常规划，早上的固定事项来不及过去时提前出门。
+  const requirements = withEarlyStart(item.requirements);
   const problem = createDayPlanningProblem({
-    requirements: item.requirements,
+    requirements,
     runId: randomUUID(),
-    requirementsFingerprint: fingerprintRequirements(item.requirements),
+    requirementsFingerprint: fingerprintRequirements(requirements),
     nowMs: V21_NOW,
     // 沿用对话规划器的延后离开策略，避免评测与实际产品使用不同排程参数。
     leaveLate: true,
@@ -300,6 +306,11 @@ export async function runPlanCase(
     legModes: result.draft.legs.map((leg) => leg.mode ?? "walking"),
     routeRequests: world.routes,
     stops: chosen.map((id) => worldPlace(id).name),
+    chosen,
+    omitted: result.draft.omittedOptional.map((item) => ({
+      externalId: externalOf(snapshot?.activities.find((record) => record.activity.activityId === item.activityId)?.activity.placeId ?? ""),
+      reason: item.reason,
+    })),
     fallback: result.explanation.includes("没能给出最终确认"),
     ...(item.intents ? {
       intent: scoreIntent(item, result.draft.activities.map((activity) => ({

@@ -1,12 +1,12 @@
 import { createServer, type ServerResponse } from "node:http";
 import { once } from "node:events";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AGENTS, TRIGGER_BUDGETS } from "../agents/registry";
+import { AGENT_IDS, AGENTS, TRIGGER_BUDGETS } from "../agents/registry";
 import { inAgent } from "../agents/run-agent";
 import { SUMMARY_PROMPT_VERSION } from "../chat-summary";
-import { INTENT_PROMPT_VERSION } from "../intent-live";
 import { createJsonDecisionTransport } from "../live";
 import { ALLOCATE_PROMPT_VERSION } from "../outing-allocate";
+import { REPAIR_PROMPT_VERSION } from "../outing-repair";
 import { AgentRun, MemoryRunSink, runIn, withRun } from "../runs";
 
 /** V3.0 运行记录（stages/V3.0.md §5）：父子与根、共用预算、交接校验、记录失败不影响请求、步骤不带正文。 */
@@ -140,11 +140,18 @@ describe("runs", () => {
     }
   });
 
+  it("V4.3: every registered model use says whether it is a tool-loop agent or a single model step", () => {
+    const byKind = (kind: "agent" | "step") => Object.values(AGENTS).filter((contract) => contract.kind === kind).map((contract) => contract.id).sort();
+    expect(byKind("agent")).toEqual(["chat-advice", "chat-companion", "chat-info", "chat-intake", "chat-trip", "day-planner", "outing-repair", "short-picker"]);
+    expect(byKind("step")).toEqual(["chat-summary", "outing-allocator", "outing-judge", "outing-reviewer", "trip-notes"]);
+    expect(byKind("agent").length + byKind("step").length).toBe(AGENT_IDS.length);
+  });
+
   it("the registry matches the agents' own versions and every caller is a known entry or agent", async () => {
     expect(AGENTS["chat-summary"].version).toBe(SUMMARY_PROMPT_VERSION);
-    expect(AGENTS.intent.version).toBe(INTENT_PROMPT_VERSION);
     expect(AGENTS["outing-allocator"].version).toBe(ALLOCATE_PROMPT_VERSION);
-    const known = new Set([...Object.keys(AGENTS), ...Object.keys(TRIGGER_BUDGETS), "outing_generate", "outing_change", "replan", "short_step"]);
+    expect(AGENTS["outing-repair"].version).toBe(REPAIR_PROMPT_VERSION);
+    const known = new Set([...Object.keys(AGENTS), ...Object.keys(TRIGGER_BUDGETS), "outing_generate", "outing_change", "short_step"]);
     for (const contract of Object.values(AGENTS)) {
       for (const caller of contract.callers) expect(known, `${contract.id} ← ${caller}`).toContain(caller);
     }

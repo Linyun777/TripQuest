@@ -2,6 +2,7 @@ import { evalChatRouter } from "../v293/chat-router";
 import { emptyDraft, emptyOutingDraft, type RequirementsDraft } from "@tripquest/application/conversation";
 import { createChatRunner, describeDraft, replyHistoryText, type ChatDecisionModel, type ChatTrip, type ChatTurnInput } from "@tripquest/agent/chat";
 import type { SummaryInput } from "@tripquest/agent/chat-summary";
+import { withAfterTurn } from "@tripquest/agent/outing-after-turn";
 import type { PlaceSearchData, PlaceSearchRequest, ProviderResult } from "@tripquest/providers";
 import { TRIP_DATE, TRIP_NOW, TRIP_STOPS, tripStopName } from "../v21/adjust-dataset";
 import { tripDraft } from "../v21/adjust-run";
@@ -77,6 +78,12 @@ export interface ConversationOutcome {
   readonly turnAgents: readonly (readonly string[])[];
   /** 全部轮次的对话模型请求。 */
   readonly modelRequests: number;
+  /** V3.6：每轮对话之后补交通用的地图请求（没有补交通这一步时为空）。 */
+  readonly fillSearches?: readonly number[];
+  /** V3.6：每轮补交通之前（模型记的）卡片上的交通。 */
+  readonly modelRides?: readonly (readonly string[])[];
+  /** V4.4：每轮的打回提示码（冒号前的部分），查打回有没有生效。 */
+  readonly turnHints?: readonly (readonly string[])[];
 }
 
 export interface ConversationCheck {
@@ -110,11 +117,26 @@ function savedTrip(): ChatTrip {
   };
 }
 
+/**
+ * V3.6：每轮对话之后由产品代码补交通（stages/V3.6.md §3.4），和对话服务里的做法相同：changed 是这一轮模型改没改卡片，
+ * userTexts 是到这一轮为止用户说的话。返回补过的卡片和加在回复后面的那句说明。
+ */
+export type AfterTurn = (
+  /** previous：这一轮之前的卡片（V4.3）。 */
+  input: { readonly draft: RequirementsDraft; readonly userTexts: readonly string[]; readonly changed: boolean; readonly previous?: RequirementsDraft },
+  world: V21World,
+) => Promise<{ readonly draft: RequirementsDraft; readonly note: string | null; readonly ask?: string }>;
+
 /** 对照 B：每轮前把落在窗口外的旧消息交给摘要器（窗口与产品相同：本轮之外的最近 11 条）。 */
 export type Summarize = (input: SummaryInput) => Promise<string | null>;
 const WINDOW = 11;
 
-export async function runConversationCase(item: ConversationCase, model: () => ChatDecisionModel, summarize?: Summarize): Promise<ConversationOutcome> {
+export async function runConversationCase(
+  item: ConversationCase,
+  model: () => ChatDecisionModel,
+  summarize?: Summarize,
+  afterTurn?: AfterTurn,
+): Promise<ConversationOutcome> {
   const world = new RecordingWorld(FORECASTS.dry);
   const web = new FakeWeb();
   const knowledge = item.cityKnowledge ? new CityAwareKnowledge() : new FakeKnowledge();
@@ -148,6 +170,10 @@ export async function runConversationCase(item: ConversationCase, model: () => C
   const turnAsks: boolean[] = [];
   const turnAgents: string[][] = [];
   let modelRequests = 0;
+  const fillSearches: number[] = [];
+  const modelRides: string[][] = [];
+  const turnHints: string[][] = [];
+  const userTexts: string[] = [];
   let routeTokens = 0;
   const cache = { hit: 0, miss: 0 };
   const failures: string[] = [];
@@ -175,10 +201,12 @@ export async function runConversationCase(item: ConversationCase, model: () => C
     routeTokens += (result as { route?: { inputTokens?: number } }).route?.inputTokens ?? 0;
     turnTokens.push(result.usage?.inputTokens ?? 0);
     modelRequests += result.counts.model;
+    turnHints.push(((result as { trace?: { hints?: readonly string[] } }).trace?.hints ?? []).map((hint) => hint.split(":")[0]!));
     // V3.4 起每轮记下跑了哪些专门 Agent（编号@提示词版本，交接的写成“甲→乙”）；之前的产品没有这一项。
     turnAgents.push([...((result as { agents?: readonly { id: string; version: string; handoffTo?: string }[] }).agents ?? [])]
       .map((agent) => `${agent.id}@${agent.version}${agent.handoffTo ? `→${agent.handoffTo}` : ""}`));
     history.push({ role: "user", text });
+    userTexts.push(text);
     const used = result.usage as { cacheHitTokens?: number | null; cacheMissTokens?: number | null } | null;
     cache.hit += used?.cacheHitTokens ?? 0;
     cache.miss += used?.cacheMissTokens ?? 0;
@@ -192,14 +220,32 @@ export async function runConversationCase(item: ConversationCase, model: () => C
       turnPlaces.push([]);
       continue;
     }
+    const previous = draft;
     draft = result.draft;
-    cardChanged ||= result.draftChanged;
+    let reply = result.reply.text;
+    let changed = result.draftChanged;
+    let asking = result.reply.asking;
+    if (afterTurn) {
+      const before = world.searches.length;
+      modelRides.push(ridesOf(draft));
+      const filled = await afterTurn({ draft, userTexts, changed: result.draftChanged, previous }, world);
+      fillSearches.push(world.searches.length - before);
+      changed ||= filled.draft !== draft;
+      draft = filled.draft;
+      // V4.4：有问句时回复里只问这一个（同对话服务）。
+      if (filled.ask) {
+        reply = withAfterTurn(reply, filled);
+        asking = true;
+      }
+      else if (filled.note) reply = `${reply}\n\n${filled.note}`;
+    }
+    cardChanged ||= changed;
     adjusted ||= !!result.adjust;
     failed ||= result.reply.fallback;
-    replies.push(result.reply.text);
-    turnAsks.push(result.reply.asking);
-    history.push({ role: "assistant", text: replyHistoryText(result.reply.text, result.reply.places) });
-    if (result.draftChanged) history.push({ role: "assistant", text: "（已更新需求卡片）" });
+    replies.push(reply);
+    turnAsks.push(asking);
+    history.push({ role: "assistant", text: replyHistoryText(reply, result.reply.places) });
+    if (changed) history.push({ role: "assistant", text: "（已更新需求卡片）" });
     sources = result.reply.sources?.length ?? 0;
     sourceKinds = (result.reply.sources ?? []).map((source) => source.kind);
     const later = result as { proposal?: { text: string; category: string }; reply: { places?: readonly { name: string }[] } };
@@ -233,11 +279,14 @@ export async function runConversationCase(item: ConversationCase, model: () => C
     turnAsks,
     turnAgents,
     modelRequests,
+    fillSearches,
+    modelRides,
+    turnHints,
   };
 }
 
 export interface ConversationRow {
-  readonly suite: "talk" | "pref" | "long" | "fix" | "e2e" | "city" | "kbcity" | "daily" | "stay" | "outing" | "accept" | "split";
+  readonly suite: "talk" | "pref" | "long" | "fix" | "e2e" | "city" | "kbcity" | "daily" | "stay" | "outing" | "accept" | "split" | "rides" | "stays" | "dates" | "dates45";
   readonly caseId: string;
   readonly heldOut: boolean;
   readonly checks: readonly { readonly name: string; readonly passed: boolean }[];
@@ -252,6 +301,14 @@ export interface ConversationRow {
   readonly turnTokens: readonly number[];
   readonly turnAgents: readonly (readonly string[])[];
   readonly modelRequests: number;
+  /** V3.6：每轮补交通用的地图请求（只有 rides 题集有）。 */
+  readonly fillSearches?: readonly number[];
+  /** V3.6：最后卡片上的交通（“d1 train 杭州东站→海澄站 暂定:to”）和每轮补之前模型记的，查失败原因用。 */
+  readonly rides?: readonly string[];
+  readonly modelRides?: readonly (readonly string[])[];
+  /** V4.4：最后卡片上的日期、住在哪和交通（dates 题集按卡片判分，没过时要看记成了什么）。 */
+  readonly card?: { readonly dates: string | null; readonly stays: readonly string[]; readonly rides: readonly string[] };
+  readonly turnHints?: readonly (readonly string[])[];
 }
 
 export async function runConversationRow(
@@ -259,10 +316,11 @@ export async function runConversationRow(
   item: ConversationCase,
   model: () => ChatDecisionModel,
   summarize?: Summarize,
+  afterTurn?: AfterTurn,
 ): Promise<ConversationRow> {
   // 城市理解与资料库过滤题按题目写的定位跑（不写 = 拒绝定位）；其余杭州回归题按定位在杭州。
-  const located = suite === "city" || suite === "kbcity" || suite === "daily" || suite === "stay" || suite === "outing" || suite === "accept" ? item : { ...item, located: item.located ?? HANGZHOU_LOCATED };
-  const outcome = await runConversationCase(located, model, summarize);
+  const located = suite === "city" || suite === "kbcity" || suite === "daily" || suite === "stay" || suite === "outing" || suite === "accept" || suite === "rides" || suite === "stays" || suite === "dates" || suite === "dates45" ? item : { ...item, located: item.located ?? HANGZHOU_LOCATED };
+  const outcome = await runConversationCase(located, model, summarize, afterTurn);
   const checks = [
     { name: "no_failed_turn", passed: !outcome.failed },
     ...item.checks.map((check) => ({ name: check.name, passed: check.test(outcome) })),
@@ -282,5 +340,24 @@ export async function runConversationRow(
     turnTokens: outcome.turnTokens,
     turnAgents: outcome.turnAgents,
     modelRequests: outcome.modelRequests,
+    ...(afterTurn && outcome.fillSearches ? { fillSearches: outcome.fillSearches } : {}),
+    ...(suite === "rides" ? { rides: ridesOf(outcome.draft), ...(outcome.modelRides ? { modelRides: outcome.modelRides } : {}) } : {}),
+    ...(suite === "dates" || suite === "dates45" ? { card: cardOf(outcome.draft) } : {}),
+    ...(suite === "dates" || suite === "dates45" || suite === "stays" ? { turnHints: outcome.turnHints ?? [] } : {}),
   };
+}
+
+function cardOf(draft: RequirementsDraft): NonNullable<ConversationRow["card"]> {
+  const outing = draft.mode === "outing" ? draft.outing : undefined;
+  const dates = outing ? (outing.dates ? `${outing.dates.from}..${outing.dates.to}` : null) : draft.date;
+  const stays = (outing as { stays?: readonly { nights: readonly number[]; city: { name: string } }[] } | undefined)?.stays ?? [];
+  return { dates, stays: stays.map((item) => `${item.nights.join(",")}:${item.city.name}`), rides: ridesOf(draft) };
+}
+
+function ridesOf(draft: RequirementsDraft): string[] {
+  const end = (place: RequirementsDraft["start"]) => (place?.status === "bound" ? place.name : place?.status ?? "空");
+  return (draft.outing?.transports ?? []).map((item) => {
+    const guessed = item.suggested ? ` 暂定:${Object.keys(item.suggested).join(",")}` : "";
+    return `d${item.day} ${item.mode} ${end(item.from)}→${end(item.to)} ${item.departAt ?? ""}-${item.arriveAt ?? ""}${guessed}`;
+  });
 }

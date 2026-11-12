@@ -1,6 +1,6 @@
 # @tripquest/worker
 
-同仓库 Node Worker，执行 `planning_tasks` 中的虚构草稿与重排任务。使用官方 PostgreSQL Checkpointer 保存 LangGraph 检查点，不需要额外队列服务。
+同仓库 Node Worker，执行 `planning_tasks` 中的虚构草稿任务。使用官方 PostgreSQL Checkpointer 保存 LangGraph 检查点，不需要额外队列服务。
 
 - `src/worker.ts`：进程入口；`src/loop.ts`：领取、清扫与清理；`src/execute.ts`：执行、心跳、取消与终态写入。
 - `src/checkpointer.ts`：PostgreSQL 检查点；任务契约在 `packages/application/src/planning-task.ts`。

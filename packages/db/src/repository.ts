@@ -15,7 +15,7 @@ import type {
   Reservation,
   ReservationConfirmationStatus,
 } from "@tripquest/domain";
-import { and, asc, desc, eq, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql, type SQL } from "drizzle-orm";
 import type { AnyPgColumn } from "drizzle-orm/pg-core";
 
 import {
@@ -141,7 +141,19 @@ export class DrizzleJourneyRepository
     return sql`exists (select 1 from ${journeys} where ${journeys.id} = ${column} and ${journeys.userId} = ${this.userId})`;
   }
 
+  /**
+   * 最近更新的 limit 项：一趟出游算一项（它的各天各段全部返回），日常的一日行程各算一项。按行截取时，一趟出游
+   * 排在后面的天会被截掉，列表把它们显示成“只有交通”。
+   */
   async listJourneys(limit: number): Promise<readonly JourneySummary[]> {
+    const item = sql`coalesce(${journeys.tripId}, ${journeys.id})`;
+    const latest = this.database
+      .select({ item: item.as("item") })
+      .from(journeys)
+      .where(eq(journeys.userId, this.userId))
+      .groupBy(item)
+      .orderBy(desc(sql`max(${journeys.updatedAt})`), desc(item))
+      .limit(Math.min(Math.max(Math.trunc(limit), 1), 100));
     const rows = await this.database
       .select({
         id: journeys.id,
@@ -159,9 +171,8 @@ export class DrizzleJourneyRepository
       })
       .from(journeys)
       .leftJoin(trips, this.trip(journeys.tripId))
-      .where(eq(journeys.userId, this.userId))
-      .orderBy(desc(journeys.updatedAt), desc(journeys.id))
-      .limit(Math.min(Math.max(Math.trunc(limit), 1), 100));
+      .where(and(eq(journeys.userId, this.userId), inArray(item, latest)))
+      .orderBy(desc(journeys.updatedAt), desc(journeys.id));
     return rows.map(({ tripId, tripTitle, tripFirst, tripLast, tripDay, tripPart, ...row }) => ({
       ...row,
       creationKind: row.creationKind as JourneySummary["creationKind"],

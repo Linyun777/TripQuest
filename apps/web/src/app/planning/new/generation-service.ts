@@ -17,6 +17,7 @@ import type { MobilityProvider } from "@tripquest/providers";
 import { createPlanningService } from "./planning-service";
 import { readGenerationConfig } from "./generation-config";
 import { createS52LiveBudget, s52LedgerPath } from "./live-budget";
+import { UsageUnavailableError } from "@tripquest/db";
 import { createUserUsage, meteredAmap } from "../../usage/usage";
 import { requireOwner } from "../../auth/owner";
 import type { ReviewReply } from "./contracts";
@@ -82,8 +83,9 @@ export function createGenerationService(options: {
                 try {
                   if (usage) await usage.reserve("model", "model", "generation");
                   else await budget!.reserveRequest(problem.runId, "model");
-                } catch {
-                  throw new DayRunError("live_budget");
+                } catch (error) {
+                  // 账本暂时记不了不是次数用完（同对话规划）。
+                  throw new DayRunError(error instanceof UsageUnavailableError ? "internal_error" : "live_budget");
                 }
               },
             });

@@ -210,5 +210,21 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)("V3.5 conversation jobs", () => 
     expect(resent.messageCount).toBe(sent.messageCount);
     expect(resent.messages.map((message) => message.kind)).toEqual(sent.messages.map((message) => message.kind));
     expect(turns).toBe(2);
+    // 第一次还在跑时就重发（断线 1 秒后页面重发，一轮要十几秒）：接到同一次上，不再跑一遍，也不各建一段对话。
+    const third = randomUUID();
+    const [racing, raced] = await Promise.all([
+      service.send(first.conversationId, "晚上呢", sent.messageCount, undefined, third),
+      service.send(first.conversationId, "晚上呢", sent.messageCount, undefined, third),
+    ]);
+    expect(racing.status).toBe("ok");
+    expect(raced).toEqual(racing);
+    const fourth = randomUUID();
+    const [opened, reopened] = await Promise.all([
+      service.start("后天想爬山", undefined, undefined, undefined, fourth),
+      service.start("后天想爬山", undefined, undefined, undefined, fourth),
+    ]);
+    if (opened.status !== "ok" || reopened.status !== "ok") throw new Error("start failed");
+    expect(reopened.conversationId).toBe(opened.conversationId);
+    expect(turns).toBe(4);
   });
 });

@@ -1,7 +1,10 @@
 import { createDayPlanningRunner, createDayScriptedModel, type DayPlanningDecisionModel } from "@tripquest/agent/day-planning";
-import { forecastLookup, generateOuting, type GeneratedDay } from "@tripquest/agent/outing-generate";
+import { forecastLookup, generateOuting, type GeneratedDay, type OutingInput } from "@tripquest/agent/outing-generate";
 import { outingReview, type OutingReviewOutcome } from "@tripquest/agent/outing-graph";
-import type { ReviewRequest } from "@tripquest/agent/outing-review";
+import type { JudgeRequest } from "@tripquest/agent/outing-judge";
+import type { ReviewFix, ReviewRequest } from "@tripquest/agent/outing-review";
+import { adoptFix, adoptionOutcome, replanDays } from "@tripquest/agent/outing-repair";
+import type { LodgingChoice } from "@tripquest/agent/outing-lodging";
 import type { Allocation } from "@tripquest/application/outing-allocation";
 import { allocationInput } from "../v211/allocation-run";
 import { FORECASTS, V21_NOW, V21World, worldPlaceByName } from "../v21/world";
@@ -17,7 +20,8 @@ export interface ReviewRow {
   readonly caseId: string;
   readonly policy: Policy;
   readonly heldOut: boolean;
-  readonly review: "on" | "off";
+  /** 审查用的哪种（V4.0 起 agent / single / off；之前的报告是 on / off）。 */
+  readonly review: "agent" | "single" | "off" | "on";
   /** 每天的结果和各站（世界编号；交通写成 transfer）。 */
   readonly days: readonly { readonly day: number; readonly outcome: string; readonly stops: readonly string[] }[];
   readonly idleMinutes: number;
@@ -36,12 +40,35 @@ export interface ReviewRow {
   readonly modelRequests: number;
   readonly mapRequests: number;
   readonly elapsedMs: number;
+  /**
+   * V4.0（stages/V4.0.md §3.5、§4.1）：每条建议各自模拟采纳（从审查后的方案出发，和用户在卡片上点“采纳”一样改，
+   * 再重排受影响的天）：planned 是这几天都排出来了，placed 是采纳的那件事落到了方案上（对调等为 null）。
+   * requests 是采纳重排用的模型请求（不算进上面审查这一趟的）。之前的报告没有这一项。
+   */
+  readonly adoptions?: readonly { readonly action: string; readonly planned: boolean; readonly placed: boolean | null; readonly requests: number }[];
+  /**
+   * V4.0（只作参考，不是通过标准）：这一趟的建议全部采纳后（按顺序叠加，放不进去的跳过，受影响的天一起重排一次）
+   * 的空闲和没排上，看试过的建议值多少。没有建议时等于上面的数。
+   */
+  readonly allAdopted?: { readonly idleMinutes: number; readonly unplaced: number; readonly requests: number };
+  /** V4.7：建议都采纳之后的每天（世界编号、开始时刻），修复题按它判定；没有建议时就是审查后的方案。 */
+  readonly finalDays?: readonly { readonly day: number; readonly outcome: string; readonly stops: readonly { readonly id: string; readonly from: number }[] }[];
 }
 
-/** 判分只看审查直接改了哪些、建议了哪些（动作类型）。 */
+/** 判分只看审查直接改了哪些、建议了哪些（动作类型）；采纳模拟要建议本身。 */
 interface ReviewOutcome {
   readonly applied: readonly { readonly action: string }[];
-  readonly suggestions: readonly { readonly action: string }[];
+  readonly suggestions: readonly { readonly action: string; readonly fix?: ReviewFix }[];
+}
+
+/** 评测世界的地点没有高德分类码（给了也只有几个），判断要的类型按标签给（产品按分类码和名字算）。 */
+const WORLD_TYPES: readonly (readonly [RegExp, string])[] = [
+  [/咖啡/, "咖啡厅"], [/茶/, "茶馆"], [/酒吧/, "酒吧"], [/餐厅|火锅|海鲜|面馆|小吃|农家菜|美食/, "餐厅"], [/博物馆|陈列馆/, "博物馆"],
+  [/寺/, "寺庙"], [/爬山|登山|山顶|索道/, "山岳"], [/海滩|沙滩/, "海滩"], [/古镇/, "古镇"], [/乐园/, "游乐园"], [/公园/, "公园"], [/步行街/, "步行街"], [/商场/, "商场"], [/剧/, "剧场"],
+];
+export function worldStopType(name: string): string {
+  const tags = worldPlaceByName(name)?.tags.join(" ") ?? name;
+  return WORLD_TYPES.find(([pattern]) => pattern.test(tags))?.[1] ?? "景点";
 }
 
 const IDLE_MINUTES = 180;
@@ -66,6 +93,8 @@ export async function runReviewCase(
     readonly day: () => DayPlanningDecisionModel;
     /** 审查 Agent 的模型请求（审查开着时产品用它）。 */
     readonly reviewer?: ReviewRequest;
+    /** V4.7 整体判断的模型请求（OUTING_REVIEW=agent 时产品用它）。 */
+    readonly judge?: JudgeRequest;
   },
 ): Promise<ReviewRow> {
   const started = Date.now();
@@ -88,26 +117,99 @@ export async function runReviewCase(
       return given(...args);
     }
     : undefined;
-  const input = allocationInput(item);
+  const givenJudge = models?.judge;
+  const judge: JudgeRequest | undefined = givenJudge
+    ? async (...args) => {
+      modelRequests += 1;
+      return givenJudge(...args);
+    }
+    : undefined;
+  const { notes, saved, said } = item as { readonly notes?: string; readonly saved?: readonly string[]; readonly said?: readonly string[] };
+  const input = {
+    ...allocationInput(item),
+    pace: "standard" as const,
+    cityAdcode: allocationInput(item).start.place.place.cityAdcode ?? "330100",
+    ...(notes ? { notes } : {}),
+    ...(saved ? { preferences: saved } : {}),
+    ...(said ? { said } : {}),
+  };
   let outcome: ReviewOutcome | null = null;
-  const generated = await generateOuting({ ...input, pace: "standard", cityAdcode: input.start.place.place.cityAdcode ?? "330100" }, reviewAllocation(item), {
+  let finalAllocation = reviewAllocation(item);
+  let lodging: readonly LodgingChoice[] = [];
+  const dependencies = {
     runner: createDayPlanningRunner({ provider: world, model: counting, now: () => V21_NOW }),
     provider: world,
     now: () => V21_NOW,
     weather: forecastLookup(world, signal),
-    ...(reviewer ? { reviewer } : {}),
-  }, {
+  };
+  const generated = await generateOuting(input, finalAllocation, { ...dependencies, ...(reviewer ? { reviewer } : {}), ...(judge ? { judge, stopType: worldStopType } : {}) }, {
     signal,
+    onLodging: (choices) => {
+      lodging = choices;
+    },
     onReview: (result: OutingReviewOutcome) => {
-      outcome = { applied: result.applied, suggestions: result.suggestions.map((item) => ({ action: item.fix.action })) };
+      finalAllocation = result.allocation;
+      outcome = {
+        applied: result.applied,
+        suggestions: result.suggestions.map((entry) => ({ action: entry.fix.action, ...(entry.fix.action !== "choose_lodging" ? { fix: entry.fix } : {}) })),
+      };
     },
   });
   const review = (outcome ?? { applied: [], suggestions: [] }) as ReviewOutcome;
-  return score(item, policy, generated, review, {
+  const cost = {
     modelRequests,
     mapRequests: world.searches.length + world.routes + world.details + world.weatherCalls,
     elapsedMs: Date.now() - started,
-  });
+  };
+  // 采纳模拟（V4.0）：住处按这次定的写回输入，每条建议从审查后的方案出发各试一次，互不影响。
+  const reviewed = { ...input, lodging: input.lodging.map((night, index) => lodging.find((choice) => choice.nights.includes(index + 1))?.place ?? night) };
+  const adoptions: { action: string; planned: boolean; placed: boolean | null; requests: number }[] = [];
+  for (const suggestion of review.suggestions) {
+    if (!suggestion.fix) continue;
+    const before = modelRequests;
+    const adopted = adoptFix(reviewed, finalAllocation, suggestion.fix);
+    if (!adopted) {
+      adoptions.push({ action: suggestion.action, planned: false, placed: false, requests: 0 });
+      continue;
+    }
+    const replanned = await replanDays(adopted.input, adopted.allocation, adopted.affected, generated, dependencies, signal);
+    adoptions.push({ action: suggestion.action, ...adoptionOutcome(adopted, suggestion.fix, replanned), requests: modelRequests - before });
+  }
+  // 全部采纳（参考）：按顺序叠加到同一份副本上，受影响的天合起来重排一次。
+  let together: { input: OutingInput; allocation: Allocation } = { input: reviewed, allocation: finalAllocation };
+  const touched = new Set<number>();
+  for (const suggestion of review.suggestions) {
+    const adopted = suggestion.fix ? adoptFix(together.input, together.allocation, suggestion.fix) : null;
+    if (!adopted) continue;
+    together = { input: adopted.input, allocation: adopted.allocation };
+    for (const day of adopted.affected) touched.add(day);
+  }
+  const base = score(item, policy, generated, review, cost);
+  let allAdopted = { idleMinutes: base.idleMinutes, unplaced: base.unplaced.length, requests: 0 };
+  let finalDays = finalView(generated);
+  if (touched.size) {
+    const before = modelRequests;
+    const days = [...touched].sort((a, b) => a - b);
+    const replanned = await replanDays(together.input, together.allocation, days, generated, dependencies, signal);
+    const merged = generated.map((day) => replanned.find((entry) => entry.day === day.day) ?? day);
+    finalDays = finalView(merged);
+    // 加的兴趣不在题目的卡片上，没排上只按题目原有的项目算（和上面的“没排上”同一口径）。
+    const scored = score(item, policy, merged, review, cost);
+    allAdopted = { idleMinutes: scored.idleMinutes, unplaced: scored.unplaced.length, requests: modelRequests - before };
+  }
+  return { ...base, adoptions, allAdopted, finalDays };
+}
+
+/** 每天的站（世界编号、开始时刻）。 */
+function finalView(days: readonly GeneratedDay[]): NonNullable<ReviewRow["finalDays"]> {
+  return days.map((entry) => ({
+    day: entry.day,
+    outcome: entry.result.status,
+    stops: entry.result.status !== "draft" ? [] : entry.result.parts.flatMap((part) => (part.kind !== "plan" ? [] : part.draft.activities.map((activity) => ({
+      id: idOf(part.draft.places.find((place) => place.placeId === activity.placeId)!.name),
+      from: activity.startsAt,
+    })))),
+  }));
 }
 
 export function score(

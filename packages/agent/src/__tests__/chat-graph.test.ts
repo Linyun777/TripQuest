@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { emptyDraft as blankDraft, emptyOutingDraft } from "@tripquest/application/conversation";
+import { emptyDraft as blankDraft, emptyOutingDraft, type RequirementsDraft } from "@tripquest/application/conversation";
 import type { PlaceSummary, ProviderEvidence, WeatherProvider, WebSearchProvider } from "@tripquest/providers";
 import { CHAT_SYSTEM_PROMPT, chatSystemPrompt, createChatRunner, replyHistoryText } from "../chat-index";
 import { inTextOrder, unknownPlaceNames } from "../chat-graph";
@@ -1103,5 +1103,75 @@ describe("V2.10 cities", () => {
       { signal: new AbortController().signal },
     );
     expect(direct.seen.map((context) => context.feedback?.code.split(":")[0] ?? null)).toEqual([null, "start_unknown"]);
+  });
+});
+
+describe("V4.4 the user's dates", () => {
+  it("bounces a turn that changes the dates the user gave, and puts them back if the model changes them again", async () => {
+    const base = emptyOutingDraft({ adcode: "330100", name: "杭州市", source: "located" });
+    const draft = { ...base, outing: { ...base.outing!, dates: { from: "2026-10-20", to: "2026-10-22" } }, saidDates: { from: "2026-10-20", to: "2026-10-22" } };
+    const longer = { action: "update_requirements", patch: { dates: { from: "2026-10-20", to: "2026-10-24" } } };
+    const { model, seen } = scripted([
+      { actions: [longer, { action: "reply", text: "好的，改成 20 到 24 日。" }] },
+      { actions: [longer, { action: "reply", text: "好的，改成 20 到 24 日。" }] },
+    ]);
+    const result = await createChatRunner({ model, places: places().search, weather }).run(
+      { draft, history: [], userText: "先去海澄住两晚，再去松州住两晚", nowMs: NOW },
+      { signal: new AbortController().signal },
+    );
+    expect(seen.map((context) => context.feedback?.code.split(":")[0] ?? null)).toEqual([null, "dates_changed"]);
+    expect(result.status === "completed" && result.draft.outing!.dates).toEqual({ from: "2026-10-20", to: "2026-10-22" });
+    expect(result.status === "completed" && result.reply.text).toBe("好的，改成 20 到 24 日。\n\n日期按你说的 10月20日–22日 没改。");
+  });
+
+  it("V4.5: bounces once when the end date does not follow the nights named, sharing the one check with the user's dates", async () => {
+    const base = emptyOutingDraft({ adcode: "330100", name: "杭州市", source: "located" });
+    const set = (to: string) => ({ action: "update_requirements", patch: { dates: { from: "2026-10-17", to } } });
+    const run = (decisions: unknown[]) => {
+      const { model, seen } = scripted(decisions);
+      return createChatRunner({ model, places: places().search, weather }).run(
+        { draft: base, history: [], userText: "周六开车去海澄住一晚，第二天去松州住两晚，最后坐高铁去云岭玩一天再回杭州", nowMs: NOW },
+        { signal: new AbortController().signal },
+      ).then((result) => ({ result, seen }));
+    };
+    const fixed = await run([
+      { actions: [set("2026-10-21"), { action: "reply", text: "好的，17 到 21 日。" }] },
+      { actions: [set("2026-10-20"), { action: "reply", text: "好的，17 到 20 日。" }] },
+    ]);
+    expect(fixed.seen.map((context) => context.feedback?.code.split(":")[0] ?? null)).toEqual([null, "dates_by_nights"]);
+    expect(fixed.result.status === "completed" && [fixed.result.draft.outing!.dates, fixed.result.reply.text]).toEqual([{ from: "2026-10-17", to: "2026-10-20" }, "好的，17 到 20 日。"]);
+    // 打回后仍不改：只打回一次，回复照发（之后由每轮之后的补卡片按晚数改）。
+    const stubborn = await run([
+      { actions: [set("2026-10-21"), { action: "reply", text: "好的，17 到 21 日。" }] },
+      { actions: [set("2026-10-21"), { action: "reply", text: "好的，17 到 21 日。" }] },
+    ]);
+    expect(stubborn.seen.length).toBe(2);
+    expect(stubborn.result.status === "completed" && stubborn.result.draft.outing!.dates).toEqual({ from: "2026-10-17", to: "2026-10-21" });
+  });
+
+  it("V4.6: lodging past the user's dates is left out without a bounce and the model is told to ask; on guessed dates it is sent back with the nights", async () => {
+    const base = emptyOutingDraft({ adcode: "330100", name: "杭州市", source: "located" });
+    const trip = { ...base, outing: { ...base.outing!, dates: { from: "2026-10-24", to: "2026-10-25" } } };
+    const lodging = (nights: number[]) => ({ action: "update_requirements", patch: { setLodging: [{ nights, place: null }] } });
+    const run = (draft: RequirementsDraft, decisions: unknown[]) => {
+      const { model, seen } = scripted(decisions);
+      return createChatRunner({ model, places: places().search, weather }).run(
+        { draft, history: [], userText: "第一晚住松州，然后想再去海澄住一晚", nowMs: NOW },
+        { signal: new AbortController().signal },
+      ).then((result) => ({ result, seen }));
+    };
+    const given = await run({ ...trip, saidDates: { from: "2026-10-24", to: "2026-10-25" } }, [
+      { actions: [lodging([1, 2]), { action: "reply", text: "好的，两晚都记上了。" }] },
+      { action: "reply", text: "第一晚记上了，要延长到 26 日吗？" },
+    ]);
+    expect(given.seen[1].feedback).toBeNull();
+    expect(given.seen[1].observations).toContainEqual(expect.objectContaining({ refused: expect.stringContaining("lodging for night 2 was not saved") }));
+    expect(given.result.status === "completed" && given.result.draft.outing!.lodging.map((item) => item.night)).toEqual([1]);
+    expect(given.result.status === "completed" && given.result.draft.outing!.dates).toEqual({ from: "2026-10-24", to: "2026-10-25" });
+    const guessed = await run(trip, [
+      { actions: [lodging([1, 2]), { action: "reply", text: "好的，两晚都记上了。" }] },
+      { actions: [lodging([1]), { action: "reply", text: "第一晚记上了，要延长到 26 日吗？" }] },
+    ]);
+    expect(guessed.seen[1].feedback?.code).toContain("it has 1 night (night 1); night 2 is outside it; either set dates.to to 2026-10-26");
   });
 });

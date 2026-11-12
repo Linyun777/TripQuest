@@ -36,14 +36,17 @@ interface Stop {
   readonly endsAt: number;
   readonly role: string;
   readonly outdoor: boolean;
+  /** V4.7 判断用：高德分类码、从上一站过来的分钟数（当天第一站没有）。 */
+  readonly categoryCode?: string;
+  readonly travelMinutes?: number;
 }
 
-function stopsOf(input: OutingInput, day: GeneratedDay): Stop[] {
+export function stopsOf(input: OutingInput, day: GeneratedDay): Stop[] {
   if (day.result.status !== "draft") return [];
   return day.result.parts.flatMap((part) => {
     if (part.kind !== "plan") return [];
     const snapshot = day.snapshots.get(part.segment);
-    return part.draft.activities.map((activity) => {
+    return part.draft.activities.map((activity, index) => {
       const selection = snapshot?.places.find((place) => place.placeId === activity.placeId)?.selection.place;
       const name = part.draft.places.find((place) => place.placeId === activity.placeId)?.name ?? selection?.name ?? "";
       const visit = input.visits.find((item) => item.place.place.ref.externalId === selection?.ref.externalId);
@@ -55,9 +58,16 @@ function stopsOf(input: OutingInput, day: GeneratedDay): Stop[] {
         endsAt: activity.endsAt,
         role: activity.role,
         outdoor: isOutdoorPlace(record?.kind ?? visit?.kind, selection?.categoryCode),
+        ...(selection?.categoryCode ? { categoryCode: selection.categoryCode } : {}),
+        ...(index > 0 ? { travelMinutes: part.draft.legs[index]?.travelMinutes ?? 0 } : {}),
       };
     });
   });
+}
+
+/** V4.0：这一天排上的卡片项目（地点的 v 编号、兴趣的 i 编号）。 */
+export function placedRefs(input: OutingInput, day: GeneratedDay): Set<string> {
+  return new Set(stopsOf(input, day).flatMap((stop) => (stop.ref ? [stop.ref] : [])));
 }
 
 /** 卡片上一项的名字（地点名或兴趣原话）。 */
@@ -367,6 +377,8 @@ export function checkFixes(
     readonly findings: readonly ReviewFinding[];
     /** 上一轮试过、重排后没变好退回的修改（fixKey），不再接受。 */
     readonly tried?: readonly string[];
+    /** V4.7：这条修改是针对一条判断问题的，不要求这天有空闲、太满或下雨（排不排得下、解决没解决由试排和判断定）。 */
+    readonly targeted?: boolean;
   },
 ): CheckedFixes {
   const { input, findings } = context;
@@ -444,7 +456,7 @@ export function checkFixes(
           reject(fix, "conflict", "a day is swapped twice");
           break;
         }
-        if (!fewerWetOutdoor(input, allocation, context.days, a, b)) {
+        if (!context.targeted && !fewerWetOutdoor(input, allocation, context.days, a, b)) {
           // 打回时由代码算出哪两天对调真的少淋雨（V2.11 分配打回时写明哪几天时间对得上，同一个做法）。
           const better = frames.flatMap((x) => frames
             .filter((y) => y.day > x.day && fewerWetOutdoor(input, allocation, context.days, x.day, y.day))
@@ -460,7 +472,7 @@ export function checkFixes(
       }
       case "add_interest": {
         const idle = findings.find((item) => item.kind === "idle" && item.day === fix.day);
-        if (!idle || idle.kind !== "idle") {
+        if ((!idle || idle.kind !== "idle") && !context.targeted) {
           reject(fix, "no_idle_time", `day ${fix.day} has no idle time`);
           break;
         }
@@ -487,7 +499,7 @@ export function checkFixes(
           reject(fix, "one_per_day", `day ${fix.day} already gets something`);
           break;
         }
-        if (fix.when) {
+        if (fix.when && idle?.kind === "idle") {
           const slot = INTEREST_SLOTS[fix.when];
           const [from, to] = [minutes(idle.from), minutes(idle.to)];
           if (Math.min(slot.endsAt, to) - Math.max(slot.startsAt, from) < 30) {
@@ -526,7 +538,7 @@ export function checkFixes(
         const day = dayOfItem(allocation, fix.visit);
         const full = findings.some((item) =>
           (item.kind === "overloaded" || item.kind === "no_plan" || item.kind === "unplaced") && item.day === day);
-        if (!full) {
+        if (!full && !context.targeted) {
           reject(fix, "day_not_full", "only drop from a day that is too full");
           break;
         }

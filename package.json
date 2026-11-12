@@ -29,7 +29,6 @@
     "eval:agent": "pnpm --filter @tripquest/evals eval:agent",
     "eval:feedback": "pnpm --filter @tripquest/evals eval:feedback",
     "agent:demo": "pnpm --filter @tripquest/evals agent:demo",
-    "eval:planning": "pnpm --filter @tripquest/evals eval:planning",
     "real-places:purge": "node packages/db/scripts/purge-real-days.mjs",
     "trace": "node packages/db/scripts/trace.mjs",
     "worker": "pnpm --filter @tripquest/worker build && node --env-file-if-exists=.env apps/worker/dist/worker.js",

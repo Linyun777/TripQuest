@@ -49,7 +49,6 @@ function service(task: StoredPlanningTask | null) {
     environment: { NODE_ENV: "test" },
     now: () => t0,
     tasks: () => repository,
-    journeys: () => ({}) as never,
   });
 }
 

@@ -118,6 +118,34 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)("V2.1 conversations on PostgreSQ
     });
     expect(await repository.findConversationIdByJourney(journeyId)).toBe(CONVERSATION);
     expect(await repository.findConversationIdByJourney("62000000-0000-4000-8000-000000000002")).toBeNull();
+    // 出游各天各段的行程编号在 outing_day 里：从“我的行程”点进某一天也要能回到对话。
+    const outingJourney = "62000000-0000-4000-8000-000000000003";
+    await repository.appendTurn({
+      conversationId: CONVERSATION,
+      expectedCount: 1,
+      messages: [{
+        role: "assistant",
+        kind: "outing_day",
+        body: {
+          generationId: "63000000-0000-4000-8000-000000000002", day: 2, date: "2026-10-15", title: "合成出游 · 第 2 天",
+          tripId: "63000000-0000-4000-8000-000000000003", status: "draft", notes: [],
+          parts: [
+            { kind: "connect", from: "合成酒店", to: "合成车站", departAt: "08:00", arriveAt: "08:30" },
+            {
+              kind: "plan",
+              segment: 1,
+              plan: {
+                runId: "63000000-0000-4000-8000-000000000004", title: "合成出游 · 第 2 天", date: "2026-10-15",
+                departAt: "09:00", arriveAt: "17:00", start: place, end: place, stops: [], notes: [], journeyId: outingJourney,
+              },
+            },
+          ],
+        },
+      }],
+      now: NOW,
+      newId,
+    });
+    expect(await repository.findConversationIdByJourney(outingJourney)).toBe(CONVERSATION);
   });
 
   it("records a short-trip pick once, and only among the options offered (V2.4)", async () => {

@@ -9,7 +9,6 @@ import {
   type IntentRouter,
 } from "./intent";
 import { DecisionModelError, type ModelReply } from "./contracts";
-import { inAgent } from "./agents/run-agent";
 import { createJsonDecisionTransport, type LiveModelOptions } from "./live";
 
 export const INTENT_PROMPT_VERSION = "intent-route.v3";
@@ -53,12 +52,7 @@ export function deepSeekIntentRouter(
   const band = options.band ?? DEFAULT_INTENT_BAND;
   return {
     name: "deepseek",
-    route: (input, { signal }) => inAgent(
-      "intent",
-      {},
-      () => route(input, signal),
-      (result) => (result.failure ? { status: "fallback", outcome: result.failure } : { status: "ok" }),
-    ),
+    route: (input, { signal }) => route(input, signal),
   };
 
   async function route(input: IntentInput, signal: AbortSignal): Promise<IntentRoute> {

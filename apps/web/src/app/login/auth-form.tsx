@@ -90,7 +90,12 @@ export function AuthForm({ mode, next }: { mode: "login" | "register"; next?: st
         return;
       }
       if (mode === "login") {
-        setError(response.status === 429 ? "试得太频繁了，过一分钟再试。" : response.status === 403 ? "这个账号已停用。" : "用户名或密码不对。");
+        // 403 不都是停用：访问地址和网站配置的地址对不上时（换了域名、用局域网地址打开）库也回 403（INVALID_ORIGIN）。
+        const code = response.status === 403 ? ((await response.json().catch(() => null)) as { code?: string } | null)?.code : undefined;
+        setError(response.status === 429 ? "试得太频繁了，过一分钟再试。"
+          : code === "BANNED_USER" ? "这个账号已停用。"
+            : response.status === 403 ? "登录请求被拒绝了，请用网站的正式地址打开页面再试。"
+              : "用户名或密码不对。");
       } else {
         const status = ((await response.json().catch(() => null)) as { status?: string } | null)?.status ?? "";
         setError(REGISTER_ERRORS[status] ?? "现在注册不了，请稍后再试。");

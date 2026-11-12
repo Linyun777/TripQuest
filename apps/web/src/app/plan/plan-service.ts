@@ -12,22 +12,22 @@ import {
   type NewMessage,
   type RequirementsDraft,
 } from "@tripquest/application/conversation";
-import { createDayPlanningProblem, type DayDraft, type DayPlanningResult, type DayWeather } from "@tripquest/application/day-planning";
+import { createDayPlanningProblem, OMITTED_DEFAULT_REASON, type DayDraft, type DayPlanningResult, type DayWeather } from "@tripquest/application/day-planning";
 import { fingerprintRequirements, type DayDraftConfirmationSnapshot } from "@tripquest/application/day-confirmation";
 import { fingerprint } from "@tripquest/application/fingerprint";
-import { DEFAULT_TRAVEL, planningRequirementsSchema, type PlanningRequirements } from "@tripquest/application/planning";
+import { DEFAULT_TRAVEL, planningRequirementsSchema, withEarlyStart, type PlanningRequirements } from "@tripquest/application/planning";
 import { visitStay } from "@tripquest/application/outing-allocation";
 import { createDayPlanningRunner, DayRunError } from "@tripquest/agent/day-planning";
 import { createDayLiveModel } from "@tripquest/agent/day-live";
 import { createCandidateRunner } from "@tripquest/agent/short";
 import { createShortLiveModel } from "@tripquest/agent/short-live";
-import { DrizzleConversationRepository, DrizzleJourneyRepository, getSharedJourneyDatabase } from "@tripquest/db";
+import { DrizzleConversationRepository, DrizzleJourneyRepository, DrizzlePreferenceRepository, getSharedJourneyDatabase, UsageLimitError } from "@tripquest/db";
 import type { MobilityProvider, PlaceLookupProvider, PlaceSummary, WeatherProvider } from "@tripquest/providers";
 import { createDraftSaveOffer } from "../planning/new/draft-receipt";
 import { readRealPlaceMode } from "../real-places/real-mode";
 import { createUserUsage, meteredAmap, meteredJevPicker } from "../usage/usage";
 import { cardView, readChatAvailability } from "./conversation-service";
-import { createReviewRequest } from "@tripquest/agent/outing-review-live";
+import { createJudgeRequest, createReviewRequest } from "@tripquest/agent/outing-review-live";
 import type { ReviewRequest } from "@tripquest/agent/outing-review";
 import { createShortService } from "./short-service";
 import { createAdjustService } from "./adjust-service";
@@ -119,8 +119,9 @@ export function createPlanService(options: PlanServiceOptions = {}) {
       beforeRequest: async () => {
         try {
           await ledger.reserve("model", "model", "plan");
-        } catch {
-          throw new DayRunError("live_budget");
+        } catch (error) {
+          // 到上限才是“今天的规划次数用完了”；账本暂时记不了按规划出错说（稍后再试）。
+          throw new DayRunError(error instanceof UsageLimitError ? "live_budget" : "internal_error");
         }
       },
     });
@@ -165,8 +166,24 @@ export function createPlanService(options: PlanServiceOptions = {}) {
       beforeRequest: () => ledger.reserve("model", "model", "outing-review"),
     });
   }
+  // V4.7：整体判断的请求（输出上限单独 2048），同样记在模型额度上。
+  async function judge() {
+    if (options.runner) return undefined;
+    const env = environment();
+    const config: unknown = JSON.parse(await readFile(resolve(root, "agent-models.local.json"), "utf8"));
+    const ledger = createUserUsage(owner(), now);
+    return createJudgeRequest({
+      config,
+      profileId: env.AGENT_MODEL_PROFILE ?? "",
+      environment: env,
+      beforeRequest: () => ledger.reserve("model", "model", "outing-judge"),
+    });
+  }
+  const savedPreferences = async () =>
+    (await new DrizzlePreferenceRepository(getSharedJourneyDatabase().database, owner()).list()).map((item) => item.text);
   const outing = createOutingGeneration({
-    now, environment, repository, amap, runner, planOutcome, reviewer,
+    now, environment, repository, amap, runner, planOutcome, reviewer, judge,
+    preferences: savedPreferences,
     cardView: reviewedCard,
   });
   // V2.11 跨天改动：重排用规划额度，确认时复查路线用保存额度（同一日的保存）。
@@ -265,7 +282,10 @@ export function createPlanService(options: PlanServiceOptions = {}) {
     // 确认快照还包含模型本轮新发现的地点，不能只从原需求卡取展示和保存所需信息。
     const ready = snapshot as DayDraftConfirmationSnapshot | null;
     if (result?.status === "completed" && result.outcome === "draft" && ready) {
-      const done = await planOutcome({ result, snapshot: ready, title: planTitle(draft), paths, environment: environment(), nowMs: now() });
+      const done = await planOutcome({
+        result, snapshot: ready, title: planTitle(draft), paths, environment: environment(), nowMs: now(),
+        ...(draft.startsAt ? { usualStart: draft.startsAt } : {}),
+      });
       ({ planView, mapStops, mapPaths, receipt } = done);
       messages.push({ role: "assistant", kind: "plan_card", body: done.body });
     } else {
@@ -338,6 +358,8 @@ export async function planOutcome(input: {
   paths: ReadonlyMap<string, readonly (readonly [number, number])[]>;
   environment: NodeJS.ProcessEnv;
   nowMs: number;
+  /** V4.2：卡片上这天原来的开始（HH:MM）；为赶上早上的固定事项提前出门时方案上说明。 */
+  usualStart?: string;
 }) {
   const { result, snapshot, title } = input;
   const places = new Map(snapshot.places.map((item) => [item.placeId, item.selection.place]));
@@ -348,8 +370,8 @@ export async function planOutcome(input: {
   const offer = await createDraftSaveOffer(snapshot, result, { environment: input.environment, now: input.nowMs });
   if (offer.status !== "available" && input.environment.NODE_ENV === "development") console.warn(`[plan] no save offer: ${offer.reason}`);
   return {
-    planView: toPlanView(result.draft, title),
-    body: toPlanBody(result.draft, title, places),
+    planView: toPlanView(result.draft, title, input.usualStart),
+    body: toPlanBody(result.draft, title, places, input.usualStart),
     mapStops: toMapStops(result.draft, places),
     mapPaths,
     receipt: offer.status === "available" ? { receipt: offer.receipt, expiresAt: offer.expiresAt } : null,
@@ -421,7 +443,8 @@ async function buildRequirements(draft: RequirementsDraft, amap: Amap, signal: A
         };
       })()),
   });
-  return parsed.success ? { status: "ok", requirements: parsed.data, weather } : { status: "unavailable" };
+  // V4.2：早上的固定事项来不及过去时这天提前出门（stages/V4.2.md §3.1；卡片不变）。
+  return parsed.success ? { status: "ok", requirements: withEarlyStart(parsed.data), weather } : { status: "unavailable" };
 }
 
 function noPlanText(built: Built, result: DayPlanningResult | null): string {
@@ -441,7 +464,7 @@ function noPlanText(built: Built, result: DayPlanningResult | null): string {
 }
 
 /** 本次页面的完整计划可以展示实时交通数字，但这个展示对象不直接用于长期存储。 */
-function toPlanView(draft: DayDraft, title: string): PlanCardView {
+function toPlanView(draft: DayDraft, title: string, usualStart?: string): PlanCardView {
   const name = (placeId: string) => draft.places.find((place) => place.placeId === placeId)?.name ?? "地点";
   const leg = (index: number): LegView | null => {
     const item = draft.legs[index];
@@ -485,7 +508,7 @@ function toPlanView(draft: DayDraft, title: string): PlanCardView {
       waitMinutes: activity.waitMinutes,
       ...freeTime(index > 0 ? draft.legs[index].departsAt - draft.activities[index - 1].endsAt : 0),
     })),
-    notes: planNotes(draft),
+    notes: planNotes(draft, usualStart),
     pending,
     saved: null,
     live: true,
@@ -498,15 +521,26 @@ function alertFor(draft: DayDraft, activityId: string): { alert?: string } {
   return found ? { alert: `预报${found.weather}，${found.advice}` } : {};
 }
 
-function planNotes(draft: DayDraft): string[] {
+function planNotes(draft: DayDraft, usualStart?: string): string[] {
   const notes: string[] = [];
+  // V4.2：比卡片上的开始早出门，是为了赶早上的固定事项。
+  const departAt = draft.legs[0]?.departsAt;
+  const fixed = draft.activities.find((activity) => activity.role === "fixed");
+  if (usualStart && fixed && departAt !== undefined && departAt < Number(usualStart.slice(0, 2)) * 60 + Number(usualStart.slice(3, 5))) {
+    const name = draft.places.find((place) => place.placeId === fixed.placeId)?.name ?? "固定事项";
+    notes.push(`为赶上 ${clock(fixed.startsAt)} 的${name.slice(0, 30)}，${clock(departAt)} 出门`);
+  }
   if (draft.assumptions.some((item) => item.includes("餐饮"))) notes.push("午饭和休息没有单独安排，可以在途中解决");
-  if (draft.omittedOptional.length) notes.push(`没排进去的：${draft.omittedOptional.map((item) => item.name).join("、")}`);
+  // V4.2：试过放不下的写上原因。
+  if (draft.omittedOptional.length) {
+    const omitted = draft.omittedOptional.map((item) => item.reason === OMITTED_DEFAULT_REASON ? item.name : `${item.name}（${item.reason.replace(/。$/, "")}）`);
+    notes.push(`没排进去的：${omitted.join("、")}`);
+  }
   return notes;
 }
 
 /** 长期存储只留下地点编号、名称、自有安排时间与理由；实时交通数字不进入正文（D-046）。 */
-function toPlanBody(draft: DayDraft, title: string, places: ReadonlyMap<string, PlaceSummary>) {
+function toPlanBody(draft: DayDraft, title: string, places: ReadonlyMap<string, PlaceSummary>, usualStart?: string) {
   const externalId = (placeId: string) => places.get(placeId)!.ref.externalId;
   const name = (placeId: string) => draft.places.find((place) => place.placeId === placeId)?.name ?? "地点";
   return {
@@ -528,7 +562,7 @@ function toPlanBody(draft: DayDraft, title: string, places: ReadonlyMap<string, 
       role: activity.role,
       ...(activity.reason ? { reason: activity.reason } : {}),
     })),
-    notes: planNotes(draft),
+    notes: planNotes(draft, usualStart),
     journeyId: null,
   };
 }

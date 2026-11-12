@@ -1,11 +1,14 @@
 import "server-only";
 import { outingReview, type OutingReviewOutcome } from "@tripquest/agent/outing-graph";
+import type { JudgeRequest } from "@tripquest/agent/outing-judge";
 import type { ReviewRequest } from "@tripquest/agent/outing-review";
 import { currentRun } from "@tripquest/agent/runs";
 import { randomUUID } from "node:crypto";
 import { allocateOuting, type AllocationRequest } from "@tripquest/agent/outing-allocate";
 import { forecastLookup, generateOuting, type GeneratedDay } from "@tripquest/agent/outing-generate";
 import type { LodgingChoice } from "@tripquest/agent/outing-lodging";
+import { fillRides } from "@tripquest/agent/outing-rides";
+import { pickPendingChoices } from "@tripquest/application/outing-rides";
 import { planOutingChange, type AdoptedChange, type OutingChangeRequest } from "@tripquest/agent/outing-change";
 import type { SuggestionFix } from "@tripquest/application/outing-review-contract";
 import {
@@ -57,6 +60,8 @@ export function createOutingService(dependencies: {
   readonly places: () => PlaceLookupProvider;
   /** 模型分配的请求；没有时只用规则分配。 */
   readonly allocator: () => Promise<AllocationRequest | undefined>;
+  /** V3.6：开始前补车站时按城市搜车站；没有时不补。 */
+  readonly stations?: () => Pick<MobilityProvider, "searchPlaces">;
 }) {
   async function allocate(
     conversationId: string,
@@ -70,6 +75,7 @@ export function createOutingService(dependencies: {
     let draft = found.conversation.draft;
     if (fingerprint(draft) !== expectedFingerprint) return { status: "conflict" };
     if (draft.mode !== "outing" || !draft.outing) return { status: "invalid", code: "outing_only" };
+    if (dependencies.stations) draft = await withStations(draft, found.messages, dependencies.stations);
     const missing = draftMissing(draft);
     if (missing.length) return { status: "incomplete", missing };
     if (move) {
@@ -112,6 +118,26 @@ export function createOutingService(dependencies: {
   }
 
   return { allocate };
+}
+
+/**
+ * V3.6（stages/V3.6.md §3.5）：分到各天、按天生成之前，卡片还缺东西时先补交通空着的车站（暂定、可换），免得只因为这个
+ * 被挡住；补完仍缺的照旧提示。这时没有回复能说明加了什么，只补车站，不加交通。验收反馈：还在等用户选的车站和住处
+ * 先取第一个候选作暂定，其余留着“换一个”（用户选过的不动）。
+ */
+async function withStations(
+  draft: RequirementsDraft,
+  messages: readonly StoredMessage[],
+  provider: () => Pick<MobilityProvider, "searchPlaces">,
+): Promise<RequirementsDraft> {
+  if (!draftMissing(draft).length) return draft;
+  const texts = messages.flatMap((message) => (message.role === "user" && message.kind === "text" ? [message.body.text] : []));
+  const filled = await Promise.resolve()
+    .then(() => fillRides(draft, texts, provider(), AbortSignal.timeout(10_000), { stationsOnly: true }))
+    .catch(() => null);
+  const picked = pickPendingChoices(filled?.draft ?? draft);
+  if (picked.picked.length) currentRun()?.step("check", "outing:picked", { picked: picked.picked });
+  return picked.draft;
 }
 
 /** 出游卡片 → 分配的输入：每个已绑定地点按编号实时补查；查不到的列出来，让用户重新选。 */
@@ -189,6 +215,7 @@ export async function outingInput(
       travel: draft.travel ?? DEFAULT_TRAVEL,
       ...(outing.noDriving?.length ? { noDriving: [...outing.noDriving] } : {}),
       ...(outing.lodgingAreas?.length ? { lodgingAreas: outing.lodgingAreas.map((area) => ({ text: area.text })) } : {}),
+      ...(outing.stays?.length ? { stays: outing.stays.map((item) => ({ nights: [...item.nights], city: item.city.adcode })) } : {}),
     },
   };
 }
@@ -238,6 +265,10 @@ export function createOutingGeneration(dependencies: {
   }) => Promise<{ planView: PlanCardView; body: PlanBody; receipt: { receipt: string; expiresAt: string } | null }>;
   /** V3.2 审查 Agent 的模型请求；没有或 OUTING_REVIEW=off 时不审查。 */
   readonly reviewer?: () => Promise<ReviewRequest | undefined>;
+  /** V4.7 整体判断的模型请求（OUTING_REVIEW=agent 才用）。 */
+  readonly judge?: () => Promise<JudgeRequest | undefined>;
+  /** V4.7：用户保存的长期偏好（读不到时为空，不挡住规划）。 */
+  readonly preferences?: () => Promise<readonly string[]>;
   /** V3.2：审查改了分配后，卡片换成新的给页面（同对话里卡片的样子）。 */
   readonly cardView?: (draft: RequirementsDraft) => Promise<unknown>;
 }) {
@@ -253,15 +284,24 @@ export function createOutingGeneration(dependencies: {
     const found = await store.findConversation(conversationId);
     if (!found) return refuse("not_found", "找不到这段对话了。");
     currentRun()?.root.link({ conversationId });
-    const { draft } = found.conversation;
-    if (fingerprint(draft) !== input.fingerprint) return refuse("conflict", "卡片刚更新过，请看一下最新的卡片再开始。");
-    if (draft.mode !== "outing" || !draft.outing) return refuse("unavailable", "这张卡片不是出游。");
+    const stored = found.conversation.draft;
+    if (fingerprint(stored) !== input.fingerprint) return refuse("conflict", "卡片刚更新过，请看一下最新的卡片再开始。");
+    if (stored.mode !== "outing" || !stored.outing) return refuse("unavailable", "这张卡片不是出游。");
+    const provider = dependencies.amap();
+    const draft = await withStations(stored, found.messages, () => provider);
     const missing = draftMissing(draft);
-    if (missing.length) return refuse("incomplete", `还需要：${missing.join("、")}`);
+    if (missing.length || !draft.outing) return refuse("incomplete", `还需要：${missing.join("、")}`);
     const days = outingDays(draft.outing);
     if (days > 1 && !draft.outing.allocation) return refuse("incomplete", "先把地点分到各天。");
+    // V3.6：补了车站的卡片先存好、推给页面；后面写卡片时按补过的比对。
+    let expected = input.fingerprint;
+    if (draft !== stored) {
+      const updated = await store.updateDraft({ conversationId, expectedFingerprint: expected, draft, now: new Date(dependencies.now()) });
+      if (updated.status !== "updated") return refuse("conflict", "卡片刚更新过，请看一下最新的卡片再开始。");
+      expected = fingerprint(draft);
+      if (dependencies.cardView) emit({ type: "card", card: await dependencies.cardView(draft) });
+    }
 
-    const provider = dependencies.amap();
     let steps = 0;
     const step = (text: string) => emit({ type: "step", step: { key: `s${(steps += 1)}`, text, state: "active" } });
     step("按地点编号查询最新的地点信息");
@@ -280,15 +320,30 @@ export function createOutingGeneration(dependencies: {
     const title = found.conversation.title;
     let messageCount = found.conversation.messageCount;
     const runner = await dependencies.runner(provider);
-    const reviewer = outingReview() === "on" ? await dependencies.reviewer?.().catch(() => undefined) : undefined;
+    const reviewer = outingReview() !== "off" ? await dependencies.reviewer?.().catch(() => undefined) : undefined;
     let review: OutingReviewOutcome | null = null;
     let lodging: readonly LodgingChoice[] = [];
-    await generateOuting({ ...built.input, pace: draft.pace, cityAdcode: draftCity(draft).adcode, ...(draft.notes ? { notes: draft.notes } : {}) }, allocation, {
+    const judge = outingReview() === "agent" ? await dependencies.judge?.().catch(() => undefined) : undefined;
+    // V4.7 验收未通过：长期偏好只跟着新流程（OUTING_REVIEW=agent）进规划，缺省流程没评测过，和卡片冲突时可能排不出。
+    const preferences = outingReview() === "agent"
+      ? await dependencies.preferences?.().catch(() => []) ?? []
+      : [];
+    // 用户原话只在这次判断时送模型，不存（stages/V4.7.md §3.1）。
+    const said = found.messages.flatMap((message) => (message.role === "user" && message.kind === "text" ? [message.body.text] : []));
+    await generateOuting({
+      ...built.input,
+      pace: draft.pace,
+      cityAdcode: draftCity(draft).adcode,
+      ...(draft.notes ? { notes: draft.notes } : {}),
+      ...(preferences.length ? { preferences: preferences.slice(0, 10) } : {}),
+      ...(judge ? { said } : {}),
+    }, allocation, {
       runner,
       provider,
       now: dependencies.now,
       weather: forecastLookup(provider, signal),
       ...(reviewer ? { reviewer } : {}),
+      ...(judge ? { judge } : {}),
     }, {
       signal,
       ...(again ? { days: input.days, exclude } : {}),
@@ -345,14 +400,20 @@ export function createOutingGeneration(dependencies: {
           ...lodgingAreasAfter(draft.outing, picked),
         },
       };
-      const updated = await store.updateDraft({ conversationId, expectedFingerprint: input.fingerprint, draft: next, now: new Date(dependencies.now()) });
+      const updated = await store.updateDraft({ conversationId, expectedFingerprint: expected, draft: next, now: new Date(dependencies.now()) });
       if (updated.status === "updated" && dependencies.cardView) emit({ type: "card", card: await dependencies.cardView(next) });
     }
-    if (outcome?.suggestions.length) {
+    if (outcome?.suggestions.length || outcome?.assessment) {
       const body: OutingReviewBody = {
         generationId,
+        ...(outcome.assessment ? { assessment: { summary: outcome.assessment.summary, items: outcome.assessment.items.map((item) => ({ ...item })), issues: outcome.assessment.issues.map((issue) => ({ ...issue })) } } : {}),
         // V3.3：上限 8 → 12（7 天的出游可能有好几段连住，每段 2 个换住处的候选）。
-        suggestions: outcome.suggestions.slice(0, 12).map((item) => ({ fix: item.fix, text: item.text.slice(0, 80), status: "pending" as const })),
+        suggestions: outcome.suggestions.slice(0, 12).map((item) => ({
+          fix: item.fix,
+          text: item.text.slice(0, 80),
+          status: "pending" as const,
+          ...(item.tried ? { tried: item.tried.slice(0, 120) } : {}),
+        })),
       };
       const appended = await store.appendTurn({
         conversationId, expectedCount: messageCount, messages: [{ role: "assistant", kind: "outing_review", body }], now: new Date(dependencies.now()), newId: randomUUID,
@@ -536,11 +597,13 @@ export function outingReviewView(message: Extract<StoredMessage, { kind: "outing
     role: "assistant",
     kind: "outing_review",
     open,
+    ...(message.body.assessment ? { assessment: message.body.assessment } : {}),
     suggestions: message.body.suggestions.map((item, index) => ({
       index,
       text: item.text,
       reason: item.fix.reason,
       status: item.status,
+      ...(item.tried ? { tried: item.tried } : {}),
       ...(item.fix.action === "choose_lodging"
         ? { place: { name: item.fix.place.name, ...(item.fix.place.city ? { city: item.fix.place.city } : {}) } }
         : {}),
@@ -944,7 +1007,7 @@ export function createOutingChangeService(dependencies: Parameters<typeof create
     }
     step("重排受影响的那几天");
     const earlier = latestGeneration(found.messages)!;
-    const reviewer = outingReview() === "on" ? await dependencies.reviewer?.().catch(() => undefined) : undefined;
+    const reviewer = outingReview() !== "off" ? await dependencies.reviewer?.().catch(() => undefined) : undefined;
     const result = await planOutingChange(draft, request, { today: saved.today, done }, {
       toInput: async (next) => {
         const built = await outingInput(next, provider, signal, dependencies.now);
@@ -1068,24 +1131,36 @@ export function createOutingChangeService(dependencies: Parameters<typeof create
     // 新的各天作为 outing_day 存进对话（带出游和各段行程），卡片换成改动后的；对话关联第一天第一段。
     const journeyOf = (day: number, part: number) => result.journeys.find((item) => item.day === day && item.part === part)?.journeyId ?? null;
     const first = [...result.journeys].sort((a, b) => a.day - b.day || a.part - b.part)[0];
-    await store.appendTurn({
-      conversationId,
-      expectedCount: found.conversation.messageCount,
-      messages: body.days.map((day) => ({
-        role: "assistant" as const,
-        kind: "outing_day" as const,
-        body: {
-          ...day,
-          tripId: body.tripId,
-          fromChange: body.changeId,
-          parts: day.parts.map((part) => (part.kind === "plan" ? { ...part, plan: { ...part.plan, journeyId: journeyOf(day.day, part.segment) } } : part)),
-        },
-      })),
-      draft: body.draft,
-      ...(first ? { journeyId: first.journeyId } : {}),
-      now: new Date(now),
-      newId: randomUUID,
-    });
+    const messages: NewMessage[] = body.days.map((day) => ({
+      role: "assistant" as const,
+      kind: "outing_day" as const,
+      body: {
+        ...day,
+        tripId: body.tripId,
+        fromChange: body.changeId,
+        parts: day.parts.map((part) => (part.kind === "plan" ? { ...part, plan: { ...part.plan, journeyId: journeyOf(day.day, part.segment) } } : part)),
+      },
+    }));
+    // 出游已经写进去了，对话必须跟上：复核路线的这几秒里对话有了新消息（别的页面发了一条）就按最新的条数再写；
+    // 一直写不进去就报暂时失败，页面重试时出游回“已保存”、这里再补（不能回“已保存”却让对话停在旧的各天和卡片上）。
+    let expectedCount = found.conversation.messageCount;
+    for (let attempt = 0; ; attempt += 1) {
+      const appended = await store.appendTurn({
+        conversationId,
+        expectedCount,
+        messages,
+        draft: body.draft,
+        ...(first ? { journeyId: first.journeyId } : {}),
+        now: new Date(now),
+        newId: randomUUID,
+      });
+      if (appended.status === "appended") break;
+      const latest = appended.status === "conflict" && attempt < 2 ? await store.findConversation(conversationId) : null;
+      if (!latest) throw new Error(`outing_change_append_${appended.status}`);
+      // 同一个改动的另一次确认已经写过了。
+      if (latest.messages.some((item) => item.kind === "outing_day" && item.body.fromChange === body.changeId)) break;
+      expectedCount = latest.conversation.messageCount;
+    }
     return { status: result.status };
   }
 

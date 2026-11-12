@@ -48,6 +48,7 @@ export {
   usageByUser,
   UsageLedger,
   UsageLimitError,
+  UsageUnavailableError,
   USER_DAILY_DEFAULTS,
   userDailyDefault,
   type UsageCategory,

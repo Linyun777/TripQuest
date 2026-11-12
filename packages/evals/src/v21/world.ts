@@ -185,8 +185,28 @@ export const SPLIT_WORLD: readonly WorldPlace[] = [
   { id: "V34-Y-CRANE-GIFT", name: "丹顶鹤手信店", tags: ["丹顶鹤"], indoor: true, x: 5005, y: -84, city: YUNLING.adcode, category: "060000" },
   { id: "V34-Y-CRANE-INN", name: "鹤乡客舍", tags: ["酒店宾馆"], indoor: true, x: 4884, y: -255, city: YUNLING.adcode, category: "100200" },
 ];
-/** Every place the evaluation provider knows: Hangzhou first (unchanged), then 云岭 and 岚溪, then V2.11's, V3.3's lodging, V3.4's. */
-const ALL_PLACES: readonly WorldPlace[] = [...WORLD, ...YUNLING_WORLD, ...OUTING_WORLD, ...ACCEPT_FIX_WORLD, ...LODGING_WORLD, ...SPLIT_WORLD];
+/**
+ * V3.6 对话记录交通（stages/V3.6.md §4.1）：三个新城市，离杭州、云岭都远（只能坐高铁、飞机或开车）。海澄只有一个高铁站，
+ * 松州有两个，鹭屿有机场也有火车站（坐飞机时不能补成火车站）。车站、机场带高德的分类码（火车站 150200、机场 150104，
+ * 2026-11-02 真实样本核对）；名字和其余标签避开以前题目搜过的词，放在最后。
+ */
+export const HAICHENG = { adcode: "990300", name: "海澄市" } as const;
+export const SONGZHOU = { adcode: "990400", name: "松州市" } as const;
+export const LUYU = { adcode: "990500", name: "鹭屿市" } as const;
+export const RIDES_WORLD: readonly WorldPlace[] = [
+  { id: "V36-HC-STATION", name: "海澄站", tags: ["高铁站", "火车站", "海澄站"], indoor: true, x: -3000, y: 1500, city: HAICHENG.adcode, category: "150200" },
+  { id: "V36-HC-LIGHT", name: "海澄灯塔", tags: ["灯塔", "看灯塔"], indoor: false, x: -2960, y: 1520, city: HAICHENG.adcode, category: "110200" },
+  { id: "V36-HC-FISH", name: "海澄鱼市", tags: ["海鲜", "鱼市"], indoor: true, x: -2985, y: 1505, city: HAICHENG.adcode, category: "050100" },
+  { id: "V36-SZ-STATION", name: "松州站", tags: ["高铁站", "火车站", "松州站"], indoor: true, x: 500, y: -3500, city: SONGZHOU.adcode, category: "150200" },
+  { id: "V36-SZ-EAST", name: "松州东站", tags: ["高铁站", "火车站", "动车", "松州东站"], indoor: true, x: 560, y: -3490, city: SONGZHOU.adcode, category: "150200" },
+  { id: "V36-SZ-STREET", name: "松州老街", tags: ["老街", "古街"], indoor: false, x: 505, y: -3495, city: SONGZHOU.adcode, category: "110200" },
+  { id: "V36-SZ-SNACK", name: "松州小吃巷", tags: ["小吃", "吃小吃"], indoor: false, x: 507, y: -3497, city: SONGZHOU.adcode, category: "050300" },
+  { id: "V36-LY-AIRPORT", name: "鹭屿机场", tags: ["机场", "飞机场", "鹭屿机场"], indoor: true, x: -6040, y: -9030, city: LUYU.adcode, category: "150104" },
+  { id: "V36-LY-STATION", name: "鹭屿站", tags: ["火车站", "鹭屿站"], indoor: true, x: -6000, y: -9000, city: LUYU.adcode, category: "150200" },
+  { id: "V36-LY-SHORE", name: "鹭屿海滨", tags: ["海边", "沙滩"], indoor: false, x: -5990, y: -9010, city: LUYU.adcode, category: "110200" },
+];
+/** Every place the evaluation provider knows: Hangzhou first (unchanged), then 云岭 and 岚溪, then V2.11's, V3.3's lodging, V3.4's, V3.6's. */
+const ALL_PLACES: readonly WorldPlace[] = [...WORLD, ...YUNLING_WORLD, ...OUTING_WORLD, ...ACCEPT_FIX_WORLD, ...LODGING_WORLD, ...SPLIT_WORLD, ...RIDES_WORLD];
 const cityOf = (place: WorldPlace) => place.city ?? "330100";
 
 const BASE = { longitude: 120.1, latitude: 30.2 };
@@ -334,7 +354,7 @@ export class V21World implements MobilityProvider, PlaceLookupProvider, WeatherP
   /** V2.10: city names (or codes) the evaluation knows; anything else is not a city. */
   async resolveCity(name: string): Promise<ProviderResult<CityRef>> {
     const key = name.trim().replace(/市$/, "");
-    const city = [YUNLING, LANXI, { adcode: "330100", name: "杭州市" }]
+    const city = [YUNLING, LANXI, { adcode: "330100", name: "杭州市" }, HAICHENG, SONGZHOU, LUYU]
       .find((item) => item.adcode === key || item.name.replace(/市$/, "") === key);
     return city
       ? { status: "ok", data: { adcode: city.adcode, name: city.name }, evidence: this.evidence() }

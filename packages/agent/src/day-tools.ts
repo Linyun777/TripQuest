@@ -26,6 +26,7 @@ import {
   validateDayDraft,
   type DayPlanningInput,
   type DayRoute,
+  type DaySchedule,
 } from "@tripquest/domain";
 import { PLANNING_FIXTURE_VERSION } from "@tripquest/providers/planning-fixture";
 import type { MobilityProvider, PlaceSearchRequest, ProviderEvidence } from "@tripquest/providers";
@@ -100,7 +101,13 @@ export interface DayToolSnapshot {
   readonly evidence: [string, ProviderEvidence][];
   readonly searchKeys: string[];
   readonly orderKeys: string[];
+  /** V4.2：已经因为点名的地点没试过打回过一次（只打回一次）。旧检查点没有这一项。 */
+  readonly namedNudged?: boolean;
 }
+
+/** V4.2：点名的地点要放进空档，除了停留再留这么多分钟走过去、走回来。 */
+const NAMED_TRAVEL_MARGIN = 30;
+const clockOf = (value: number) => `${String(Math.floor(value / 60)).padStart(2, "0")}:${String(value % 60).padStart(2, "0")}`;
 
 /**
  * 一次运行共享一份地点池、活动池、路线事实和去重记录。
@@ -115,6 +122,7 @@ export class DayToolExecutor {
   private readonly routeCache: Map<string, DayRoute>;
   private readonly searchKeys: Set<string>;
   private readonly orderKeys: Set<string>;
+  private namedNudged: boolean;
 
   constructor(
     readonly problem: DayPlanningProblem,
@@ -133,6 +141,7 @@ export class DayToolExecutor {
     this.routeEvidence = new Map(saved?.evidence ?? []);
     this.searchKeys = new Set(saved?.searchKeys ?? []);
     this.orderKeys = new Set(saved?.orderKeys ?? []);
+    this.namedNudged = saved?.namedNudged ?? false;
   }
 
   snapshot(): DayToolSnapshot {
@@ -145,6 +154,7 @@ export class DayToolExecutor {
       evidence: [...this.routeEvidence.entries()],
       searchKeys: [...this.searchKeys],
       orderKeys: [...this.orderKeys],
+      ...(this.namedNudged ? { namedNudged: true } : {}),
     });
   }
 
@@ -290,7 +300,7 @@ export class DayToolExecutor {
           attempt.runId === this.problem.runId && attempt.requirementsFingerprint === this.problem.requirementsFingerprint)) {
           return "unverified_attempt";
         }
-        return null;
+        return this.untriedNamed(attempt);
       }
       case "stop": {
         const latest = this.attempts.at(-1);
@@ -637,6 +647,75 @@ export class DayToolExecutor {
     }));
   }
 
+  /**
+   * V4.2（stages/V4.2.md §3.2）：卡片上点名“想去”的地点本轮一次都没试过、这次方案里又有放得下它的空档时，
+   * finish 打回一次，给出把它插进那段空档的顺序（D01 实测：只说空档在下午，模型把灵隐寺放到第一站、挤掉了中午的饭，
+   * 又重交旧顺序用完修正次数）；试过放不下、或已经打回过，照常结束（没排进去的说明里写原因）。
+   * 必去本来就不能省，不在这里管。打回记进快照，恢复后不会再打回。
+   */
+  private untriedNamed(attempt: DayAttempt): string | null {
+    if (this.namedNudged) return null;
+    const tried = new Set(this.attempts.flatMap((item) => item.order));
+    const missing = this.activities.flatMap((record) => {
+      if (record.activity.role !== "optional" || tried.has(record.activity.activityId)) return [];
+      const stretch = this.freeStretch(attempt.schedule!, record);
+      return stretch ? [{ record, stretch }] : [];
+    });
+    if (!missing.length) return null;
+    this.namedNudged = true;
+    const { record, stretch } = missing[0]!;
+    const id = record.activity.activityId;
+    const order = [...attempt.order.slice(0, stretch.index), id, ...attempt.order.slice(stretch.index)];
+    return `named_untried: ${id} (${this.placeName(record.activity.placeId)}) was never in a try; free ${clockOf(stretch.from)}-${clockOf(stretch.to)}, ` +
+      `try ${JSON.stringify(order)}; if it does not fit, finish ${attempt.attemptId}`;
+  }
+
+  /**
+   * 方案里放得下这一站的最长空档（按它的营业时间截取）：出发前、两站之间（上一站结束到出发去下一站，
+   * 加上在门口等的时间）、回到终点后到时间窗结束。空档要够它最短的停留再加来回的路，否则返回 null。
+   * index 是插进顺序的位置（空档后面那一站的序号；最后一段是站数）。
+   */
+  private freeStretch(schedule: DaySchedule, record: DayActivityRecord): { from: number; to: number; index: number } | null {
+    const window = this.problem.input.window;
+    const gaps = schedule.legs.flatMap((leg, index) => {
+      const from = index === 0 ? window.startsAt : schedule.activities[index - 1]!.endsAt;
+      const wait = schedule.activities[index]?.waitMinutes ?? 0;
+      return [{ from, to: leg.departsAt + wait, index }];
+    });
+    gaps.push({ from: schedule.endArrival, to: window.endsAt, index: schedule.activities.length });
+    const opening = record.activity.opening;
+    if (opening.status === "closed") return null;
+    const open = opening.status === "known" ? opening.windows : [{ startsAt: window.startsAt, endsAt: window.endsAt }];
+    const need = (record.floor ?? record.activity.stayMinutes) + NAMED_TRAVEL_MARGIN;
+    const stretches = gaps.flatMap((gap) => open.map((hours) => ({
+      from: Math.max(gap.from, hours.startsAt),
+      to: Math.min(gap.to, hours.endsAt),
+      index: gap.index,
+    })));
+    return stretches.filter((item) => item.to - item.from >= need).sort((a, b) => (b.to - b.from) - (a.to - a.from))[0] ?? null;
+  }
+
+  /**
+   * V4.2：没排进去的“想去”地点各自的原因：试过的按最近一次包含它的试排为什么排不开说；没试过、方案里也没有
+   * 放得下它的空档的说时间不够；其余照旧（排程只保留了必去、固定事项和衔接）。
+   */
+  private omittedReasons(attempt: DayAttempt): Record<string, string> {
+    const reasons: Record<string, string> = {};
+    for (const record of this.activities) {
+      const id = record.activity.activityId;
+      if (record.activity.role !== "optional" || attempt.order.includes(id)) continue;
+      const last = [...this.attempts].reverse().find((item) => !item.schedule && item.order.includes(id));
+      if (last) {
+        const issue = last.issues.find((item) => item.activityId === id && item.kind === "violation") ??
+          last.issues.find((item) => item.kind === "violation" || item.code === "day_route_unknown");
+        reasons[id] = `试排过，加上它${issueWords(issue?.code)}。`;
+      } else if (!this.freeStretch(attempt.schedule!, record)) {
+        reasons[id] = `这一天没有够它停留（至少 ${record.floor ?? record.activity.stayMinutes} 分钟）再加来回路程的空档。`;
+      }
+    }
+    return reasons;
+  }
+
   finish(attemptId: string, reasons: Readonly<Record<string, string>> = {}) {
     this.active();
     const attempt = this.attempts.find((a) => a.attemptId === attemptId)!;
@@ -649,6 +728,7 @@ export class DayToolExecutor {
     if (validation.verdict === "rejected") throw new DayRunError("provider_error");
     return buildDayDraft({
       stays,
+      omitted: this.omittedReasons(attempt),
       problem: this.problem, places: this.places, activities: this.activities,
       schedule: attempt.schedule!, validation, routeEvidence: this.routeEvidence,
       createdAt: new Date(this.now()).toISOString(),

@@ -12,7 +12,6 @@ import {
   replanResultSchema,
   type DayReplanProblem,
 } from "@tripquest/application/day-replan";
-import type { JourneyRepository } from "@tripquest/application";
 import {
   planningTaskViewSchema,
   type PlanningTaskRepository,
@@ -20,15 +19,9 @@ import {
   type StoredPlanningTask,
 } from "@tripquest/application/planning-task";
 import { fingerprint } from "@tripquest/application/fingerprint";
-import { createReplanScriptedModel } from "@tripquest/agent/replanning";
 import { PLANNING_FIXTURE_VERSION } from "@tripquest/providers/planning-fixture";
-import {
-  DrizzleJourneyRepository,
-  getSharedJourneyDatabase,
-  PgPlanningTaskRepository,
-} from "@tripquest/db";
+import { getSharedJourneyDatabase, PgPlanningTaskRepository } from "@tripquest/db";
 import { createDraftSaveOffer } from "../../planning/new/draft-receipt";
-import { issueReplanOffer } from "../../journeys/replan-offer";
 
 /** 持久化任务仅运行本地模拟数据与脚本策略（D-045），不把真实地点快照写入恢复检查点。 */
 export function tasksEnabled(environment: NodeJS.ProcessEnv = process.env): boolean {
@@ -46,7 +39,6 @@ export function createTaskService(options: {
   environment?: NodeJS.ProcessEnv;
   now?: () => number;
   tasks?: () => PlanningTaskRepository;
-  journeys?: () => JourneyRepository;
   /** V2.12：当前用户；只看、只建、只取消这个用户的任务。 */
   userId?: string;
 } = {}) {
@@ -55,8 +47,6 @@ export function createTaskService(options: {
   const now = () => (options.now ?? Date.now)();
   const tasks = () => options.tasks?.() ??
     new PgPlanningTaskRepository(getSharedJourneyDatabase().pool, { userId: owner() });
-  const journeys = () => options.journeys?.() ??
-    new DrizzleJourneyRepository(getSharedJourneyDatabase().database, owner());
 
   /** 页面只接收状态、进度、结果和凭据；任务输入与租约令牌留在服务端。 */
   async function view(task: StoredPlanningTask): Promise<PlanningTaskView> {
@@ -87,19 +77,8 @@ export function createTaskService(options: {
         offer: offer ?? null,
       });
     }
+    // V3.6：途中重排已删除，不再建这类任务、不再签发确认凭据；以前留下的照原样读出来。
     const result = task.result ? replanResultSchema.parse(task.result) : null;
-    let offer = task.offer;
-    if (!offer && task.status === "completed" && result?.status === "completed" && result.outcome === "candidate") {
-      const scripted = createReplanScriptedModel();
-      offer = await tasks().setOffer(task.id, await issueReplanOffer({
-        result,
-        problem: task.input as DayReplanProblem,
-        execution: { mode: scripted.mode, provider: scripted.provider, model: scripted.model },
-        environment: environment(),
-        now: now(),
-        repository: journeys(),
-      }) ?? null);
-    }
     const problem = task.input as DayReplanProblem;
     return planningTaskViewSchema.parse({
       ...base,
@@ -108,7 +87,7 @@ export function createTaskService(options: {
       base: { planVersion: problem.basePlanVersion, observationVersion: problem.baseObservationVersion },
       progress: task.progress ?? null,
       result,
-      offer: offer ?? null,
+      offer: task.offer ?? null,
     });
   }
 
@@ -124,26 +103,6 @@ export function createTaskService(options: {
           kind: "day_draft",
           requirementsFingerprint: problem.requirementsFingerprint,
           datasetVersion: PLANNING_FIXTURE_VERSION,
-        }),
-        input: problem,
-        createdAt: new Date(now()),
-      });
-    },
-    // 任务幂等身份包含计划、观察版本和基础指纹；目标相同但基础状态变化，也属于新的规划意图。
-    async createReplan(problem: DayReplanProblem, requestKey: string) {
-      return tasks().createTask({
-        id: randomUUID(),
-        kind: "day_replan",
-        journeyId: problem.journeyId,
-        requestKey,
-        intentFingerprint: fingerprint({
-          kind: "day_replan",
-          journeyId: problem.journeyId,
-          basePlanVersion: problem.basePlanVersion,
-          baseObservationVersion: problem.baseObservationVersion,
-          baseFingerprint: problem.baseFingerprint,
-          scope: problem.scope,
-          goal: problem.goal,
         }),
         input: problem,
         createdAt: new Date(now()),

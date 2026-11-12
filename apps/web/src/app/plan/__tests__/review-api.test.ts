@@ -142,10 +142,11 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)("V3.2 review suggestions through
   });
 
   it("stores the suggestions after the days; dismissing is once; adopting before saving changes the card, after saving goes through a change", async () => {
+    // V4.1：“加兴趣”的建议先试排，排上了才给（演示地点里搜得到的兴趣才排得上）。
     const { chat, plan, save } = services([{
       fixes: [
-        { action: "add_interest", day: 1, text: "喝下午茶", when: "afternoon", reason },
-        { action: "add_interest", day: 2, text: "逛逛老街", reason },
+        { action: "add_interest", day: 1, text: "公园花园", when: "afternoon", reason },
+        { action: "add_interest", day: 2, text: "餐饮小馆", reason },
       ],
     }]);
     const store = conversations();
@@ -159,9 +160,12 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)("V3.2 review suggestions through
     const kinds = generated.map((event) => event.type).filter((type) => type !== "step");
     expect(kinds).toEqual(["day", "day", "review", "outing_done"]);
     expect(generated.filter((event) => event.type === "step").map((event) => (event.step as { text: string }).text)).toContain("正在检查整趟安排");
-    const review = generated.find((event) => event.type === "review") as unknown as { message: { id: string; open: boolean; suggestions: { text: string; status: string }[] } };
+    const review = generated.find((event) => event.type === "review") as unknown as {
+      message: { id: string; open: boolean; suggestions: { text: string; status: string; tried?: string }[] };
+    };
     expect(review.message.open).toBe(true);
-    expect(review.message.suggestions.map((item) => [item.text, item.status])).toEqual([["第 1 天下午加“喝下午茶”", "pending"], ["第 2 天加“逛逛老街”", "pending"]]);
+    expect(review.message.suggestions.map((item) => [item.text, item.status])).toEqual([["第 1 天下午加“公园花园”", "pending"], ["第 2 天加“餐饮小馆”", "pending"]]);
+    expect(review.message.suggestions.every((item) => item.tried?.startsWith("已试排："))).toBe(true);
     const messageId = review.message.id;
 
     const current = async () => (await conversations().findConversation(id))!.conversation;
@@ -170,7 +174,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)("V3.2 review suggestions through
 
     const adopted = await plan.decideReview(id, { messageId, index: 0, decision: "adopt", fingerprint: fingerprint((await current()).draft) });
     expect(adopted).toMatchObject({ status: "ok", days: [1] });
-    expect((await current()).draft.interests.map((item) => item.text)).toContain("喝下午茶");
+    expect((await current()).draft.interests.map((item) => item.text)).toContain("公园花园");
     // 页面拿回复里卡片的指纹接着重排受影响的天。
     const after = await current();
     expect((adopted as { card: { fingerprint: string } }).card.fingerprint).toBe(fingerprint(after.draft));
@@ -186,7 +190,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)("V3.2 review suggestions through
     const generationId = (days[0]!.body as { generationId: string }).generationId;
     expect(await save(id, { generationId, receipts, acknowledgeUnknowns: true })).toMatchObject({ status: "saved" });
 
-    const again = services([{ fixes: [{ action: "add_interest", day: 2, text: "逛逛老街", reason }] }]);
+    const again = services([{ fixes: [{ action: "add_interest", day: 2, text: "餐饮小馆", reason }] }]);
     const before = fingerprint((await current()).draft);
     const regenerated = await events((emit, signal) => again.plan.outing(id, { fingerprint: before, days: [2] }, emit as never, signal));
     const second = regenerated.find((event) => event.type === "review") as unknown as { message: { id: string } } | undefined;

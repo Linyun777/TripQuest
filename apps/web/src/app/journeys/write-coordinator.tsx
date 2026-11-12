@@ -2,7 +2,7 @@
 
 import { createContext, useCallback, useContext, useMemo, useRef, useState, type ReactNode } from "react";
 
-export type WriteIntent = "edit" | "report" | "replan" | "confirm";
+export type WriteIntent = "edit" | "report";
 interface Coordinator {
   /** The intent currently holding the page, if any. */
   readonly owner: WriteIntent | null;
@@ -17,7 +17,7 @@ const WriteContext = createContext<Coordinator>({
   release: () => {},
 });
 
-/** One page-level write intent at a time: single edit, report, generation or confirmation. */
+/** One page-level write intent at a time: a single edit or a progress report. */
 export function WriteCoordinator({ children }: { children: ReactNode }) {
   const [owner, setOwner] = useState<WriteIntent | null>(null);
   const current = useRef<WriteIntent | null>(null);

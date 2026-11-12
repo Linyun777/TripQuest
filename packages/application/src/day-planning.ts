@@ -401,6 +401,9 @@ export function freezeDayProblem<T>(value: T): T {
   return value;
 }
 
+/** 没排进去的“想去”地点没有具体原因时的说法。 */
+export const OMITTED_DEFAULT_REASON = "本轮组合未纳入此可选项；优先保留必去、固定事项及完整衔接。";
+
 /**
  * 将独立校验后的排程装配为展示契约：补名称、来源、未知项、假设和未纳入的可选项。
  * 这里不再做规划决策；pending 会原样保留，不能在展示转换时升级成已核实。
@@ -418,6 +421,8 @@ export function buildDayDraft(options: {
   routes?: readonly DayRoute[];
   /** V2.11：排不下时缩短了的估计停留（活动 → 分钟），方案里写明原估计。 */
   stays?: ReadonlyMap<string, number>;
+  /** V4.2：没排进去的“想去”地点各自的原因（活动 → 原因）；没给的用通用说法。 */
+  omitted?: Readonly<Record<string, string>>;
 }): DayDraft {
   const { problem, schedule } = options;
   if (options.validation.verdict === "rejected") throw new Error("unverified_draft");
@@ -497,7 +502,7 @@ export function buildDayDraft(options: {
       r.activity.role === "optional" && !selected.has(r.activity.activityId)).map((r) => ({
       activityId: r.activity.activityId,
       name: named(r.activity.placeId).name,
-      reason: "本轮组合未纳入此可选项；优先保留必去、固定事项及完整衔接。",
+      reason: options.omitted?.[r.activity.activityId] ?? OMITTED_DEFAULT_REASON,
     })),
     ...outdoorAlerts(problem, schedule, options),
   });

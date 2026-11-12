@@ -45,7 +45,13 @@ function scripted(decisions: unknown[]): ChatDecisionModel {
   };
 }
 
-function setup(decisions: unknown[], web?: WebSearchProvider, knowledge?: ChatKnowledgeBase, extra: Partial<ChatRunnerDependencies> = {}) {
+function setup(
+  decisions: unknown[],
+  web?: WebSearchProvider,
+  knowledge?: ChatKnowledgeBase,
+  extra: Partial<ChatRunnerDependencies> = {},
+  service: Record<string, unknown> = {},
+) {
   const repository = new MemoryConversations();
   const places = {
     async searchPlaces() {
@@ -105,6 +111,7 @@ function setup(decisions: unknown[], web?: WebSearchProvider, knowledge?: ChatKn
       ...(knowledge ? { knowledge } : {}),
       ...extra,
     }),
+    ...service,
   };
   return {
     repository,
@@ -200,6 +207,57 @@ describe("V2.1 conversation API", () => {
     }, undefined, "PATCH"), { params: Promise.resolve({ conversationId: body.conversationId }) })).json();
     expect(confirmed.card.outing.transports[0]).toMatchObject({ overnight: true, confirmed: true });
     expect(confirmed.card.missing).not.toContain("确认第 1 晚在车上过夜");
+  });
+
+  it("V3.6: empty stations and a missing return are filled by code, said in the reply, and a guessed station can be swapped", async () => {
+    const station = (externalId: string, name: string, cityAdcode: string, categoryCode = "150200") => ({
+      ref: { provider: "amap", externalId }, name, cityAdcode, categoryCode,
+      location: { longitude: 120.1, latitude: 30.2, coordinateSystem: "gcj02" as const },
+    });
+    const searched: string[] = [];
+    const stations = {
+      async searchPlaces(request: { query: string; scope: { kind: string; cityAdcode?: string } }) {
+        searched.push(`${request.query}@${request.scope.cityAdcode}`);
+        const items = request.scope.cityAdcode === "990002"
+          ? [station("S-SEA-M", "海合站(地铁站)", "990002", "150500"), station("S-SEA", "海合站", "990002"), station("S-SEA-N", "海合北站", "990002")]
+          : [station("S-HOME", "合成东站", "330100")];
+        return { status: "ok" as const, data: { items, truncated: false }, evidence };
+      },
+    };
+    const cities = {
+      async resolveCity(name: string) {
+        return name.startsWith("海合")
+          ? { status: "ok" as const, data: { adcode: "990002", name: "海合市" }, evidence }
+          : { status: "failure" as const, failure: { code: "invalid_request" as const, retry: "never" as const, safeMessage: "不是城市" }, evidence };
+      },
+    };
+    const { start, draft } = setup([
+      { action: "search_place", mention: "合成广场", purpose: "start" },
+      { action: "set_city", city: "海合" },
+      { action: "update_requirements", patch: {
+        dates: { from: "2026-10-17", to: "2026-10-18" },
+        start: { candidate: "c1" },
+        addTransports: [{ day: 1, mode: "train" }],
+        addInterests: ["看海"],
+      } },
+      { action: "reply", text: "好的，高铁的车站告诉我一下。", ask: true },
+    ], undefined, undefined, { cities }, { stations: () => stations });
+    const body = await (await start(post("/api/conversations", { text: "17到18号从合成广场坐高铁去海合看海", mode: "outing" }))).json();
+    const card = body.messages.at(-1).card;
+    expect(card.outing.transports).toMatchObject([
+      { day: 1, from: { name: "合成东站" }, to: { name: "海合站" }, suggested: { to: [{ placeId: "S-SEA-N", name: "海合北站" }] } },
+      { day: 2, from: { name: "海合站" }, to: { name: "合成东站" }, suggested: { ride: true } },
+    ]);
+    expect(card.missing).toEqual([]);
+    expect(searched).toEqual(["火车站@330100", "火车站@990002"]);
+    const reply = body.messages.find((message: { kind: string; role: string }) => message.kind === "text" && message.role === "assistant").text;
+    expect(reply).toMatch(/^好的，高铁的车站告诉我一下。\n\n回程按同样的方式估计（第 2 天 海合站 → 合成东站），可改。车站先按合成东站、海合站估计，卡片上可以换。$/);
+    const swapped = await (await draft(post(`/api/conversations/${body.conversationId}/draft`, {
+      patch: { choose: [{ target: "t1:to", externalId: "S-SEA-N" }] },
+      fingerprint: card.fingerprint,
+    }, undefined, "PATCH"), { params: Promise.resolve({ conversationId: body.conversationId }) })).json();
+    expect(swapped.card.outing.transports[0]).toMatchObject({ to: { name: "海合北站" } });
+    expect(swapped.card.outing.transports[0].suggested).toEqual({ from: [] });
   });
 
   it("V2.11: a complete outing card is split into days, and moving an item keeps the split", async () => {

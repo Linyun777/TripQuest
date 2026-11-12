@@ -51,13 +51,23 @@ export class UsageLimitError extends Error {
   }
 }
 
+/** 账本读写不了（连接、锁、语句超时）：这一次没记上、请求不发，但不是次数用完，调用方不能说“明天再试”。 */
+export class UsageUnavailableError extends Error {
+  constructor(readonly category: UsageCategory) {
+    super("usage ledger unavailable");
+  }
+}
+
 export interface UsageToday {
   readonly category: UsageCategory;
   readonly used: number;
   readonly limit: number;
 }
 
-/** 一个用户的用量账本：先预留再请求，失败也不退还次数（同原来的本机账本）。 */
+/**
+ * 一个用户的用量账本：先预留再请求，失败也不退还次数（同原来的本机账本）。到上限抛 UsageLimitError；
+ * 账本本身读写不了抛 UsageUnavailableError（以前也算成到上限，数据库一抖用户就被告知“今天用完了”）。
+ */
 export class UsageLedger {
   constructor(
     private readonly pool: Pool,
@@ -70,7 +80,9 @@ export class UsageLedger {
 
   async reserve(category: UsageCategory, kind: string, purpose: string): Promise<void> {
     const day = chinaDay(this.now());
-    const client = await this.pool.connect();
+    const client = await this.pool.connect().catch(() => {
+      throw new UsageUnavailableError(category);
+    });
     try {
       await client.query("BEGIN");
       // 同一天同一类的预留串行：数已用量、比上限、写入在同一把锁里。几个人用，锁的范围按类别足够。
@@ -92,7 +104,8 @@ export class UsageLedger {
       await client.query("COMMIT");
     } catch (error) {
       await client.query("ROLLBACK").catch(() => {});
-      throw error instanceof UsageLimitError ? error : new UsageLimitError(category, "site");
+      // 不带出驱动的原始错误（可能含连接信息）。
+      throw error instanceof UsageLimitError ? error : new UsageUnavailableError(category);
     } finally {
       client.release();
     }

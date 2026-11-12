@@ -1,3 +1,5 @@
+import type { JudgeRequest } from "@tripquest/agent/outing-judge";
+import { worldStopType } from "../v32/review-run";
 import { createDayPlanningRunner, createDayScriptedModel, type DayPlanningDecisionModel } from "@tripquest/agent/day-planning";
 import { allocateOuting, type AllocationRequest } from "@tripquest/agent/outing-allocate";
 import { forecastLookup, generateOuting } from "@tripquest/agent/outing-generate";
@@ -50,6 +52,8 @@ export async function runOutingCase(
     readonly allocator: AllocationRequest;
     /** V3.2：审查开着（缺省）时排完审查，和产品一样。 */
     readonly reviewer?: ReviewRequest;
+    /** V4.7 整体判断（OUTING_REVIEW=agent 时产品用它）。 */
+    readonly judge?: JudgeRequest;
   },
 ): Promise<OutingRow> {
   const started = Date.now();
@@ -83,6 +87,7 @@ export async function runOutingCase(
     now: () => V21_NOW,
     weather: forecastLookup(world, signal),
     ...(reviewer ? { reviewer } : {}),
+    ...(policy === "live" && models?.judge ? { judge: models.judge, stopType: worldStopType } : {}),
   }, { signal });
 
   const days = generated.map((entry) => {

@@ -1,6 +1,5 @@
 import { CHAT_AGENT_VERSIONS, chatAgentPrompt, type ChatSpecialistId } from "./chat-agent-prompts";
 import type { ChatAction, ChatDecisionContext } from "./chat-contracts";
-import { chatSystemPrompt } from "./chat-prompt";
 import { INTENT_FLAGS, type IntentFlag, type IntentFlags } from "./intent";
 
 /**
@@ -44,19 +43,6 @@ export const CHAT_AGENTS: Readonly<Record<ChatSpecialistId, ChatAgentSpec>> = {
 };
 
 /**
- * 提问只来自安全网的消息（“晚上整两杯？”是问句式的计划，“灵锋古寺要预月吗”是打错字的提问）：分不清，就像拆开前那样
- * 一个 Agent 拿两套规则——需求理解，加上联网、资料库的规则和动作（提示词同拆开前那一轮，只是不带已保存行程的块）。
- */
-export const CHAT_INTAKE_WITH_QUESTIONS: ChatAgentSpec = {
-  id: "chat-intake",
-  version: CHAT_AGENT_VERSIONS["chat-intake"],
-  actions: ["search_place", "get_weather", "set_city", "update_requirements", "web_search", "ask_knowledge", "reply"],
-  owns: ["planning", "advice", "ask_timely", "ask_knowledge"],
-  offers: (flags) => ({ web: true, knowledge: flags.ask_knowledge }),
-  prompt: (context) => chatSystemPrompt({ ...context, trip: undefined }),
-};
-
-/**
  * 在这个 Agent 看来的分流判断：没管的当作没判出。需求理解总是当作规划（它只在判出规划、什么都没判出，或被交接来时跑）。
  */
 export function agentFlags(agent: ChatAgentSpec, flags: IntentFlags): IntentFlags {
@@ -75,18 +61,17 @@ export const MAX_AGENTS_PER_TURN = 2;
 /**
  * 总控（§3.2，代码，不问模型）：按固定次序挑，一轮最多 2 个；判出长期偏好时 chat-companion 一定在，替换排第二的。
  * 闲聊只在纯闲聊时交给 chat-companion（V2.9.1 的老规矩：“谢谢，明天想去…”按请求处理）。
+ * V4.1：问句安全网的消息不再退回“需求理解 + 提问规则”一个 Agent（V3.4 的 CHAT_INTAKE_WITH_QUESTIONS），由级联分流
+ * 交给模型判断后按一般规则挑（stages/V4.1.md §3.3）。
  */
 export function pickAgents(
   flags: IntentFlags,
   hasTrip: boolean,
-  cues: { readonly guessed?: boolean; readonly asks?: boolean } = {},
+  cues: { readonly asks?: boolean } = {},
 ): { agent: ChatSpecialistId; reason: string }[] {
-  const guessed = !!cues.guessed && !flags.planning && flags.ask_timely && flags.ask_knowledge;
-  // 提问只来自安全网：没有已保存行程时交给带提问规则的需求理解一个（CHAT_INTAKE_WITH_QUESTIONS）；有行程时先交给改行程。
-  if (guessed && !hasTrip && !flags.preference && !flags.chitchat) return [{ agent: "chat-intake", reason: "guessed_question" }];
   const picked: { agent: ChatSpecialistId; reason: string }[] = [];
-  if (hasTrip && (flags.adjust || flags.planning || guessed)) {
-    picked.push({ agent: "chat-trip", reason: flags.adjust ? "adjust" : flags.planning ? "planning" : "guessed_question" });
+  if (hasTrip && (flags.adjust || flags.planning)) {
+    picked.push({ agent: "chat-trip", reason: flags.adjust ? "adjust" : "planning" });
   } else if (flags.planning) picked.push({ agent: "chat-intake", reason: "planning" });
   // 资料查询排在别人后面时，只在消息像问句时才加（“茶馆关门了不去了”判出时效词，但没什么可答）。
   if ((flags.ask_timely || flags.ask_knowledge) && (cues.asks !== false || !picked.length)) {

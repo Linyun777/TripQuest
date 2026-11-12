@@ -21,10 +21,14 @@ import {
   type DraftCity,
   type OutingDraft,
 } from "@tripquest/application/conversation";
-import { createChatRunner, describeDraft, replyHistoryText, type ChatOutside, type ChatProgress, type ChatTurnResult } from "@tripquest/agent/chat";
+import { ChatRunError, createChatRunner, describeDraft, replyHistoryText, type ChatOutside, type ChatProgress, type ChatTurnResult } from "@tripquest/agent/chat";
 import { createChatSummarizer, type SummaryInput } from "@tripquest/agent/chat-summary";
 import { createChatLiveModel } from "@tripquest/agent/chat-live";
 import { createAllocationRequest } from "@tripquest/agent/outing-allocate";
+import { afterOutingTurn, withAfterTurn } from "@tripquest/agent/outing-after-turn";
+import { datesFromCard } from "@tripquest/application/said-dates";
+import { rideHints } from "@tripquest/application/outing-rides";
+import { stayHints, staysLabel } from "@tripquest/application/outing-stays";
 import { createOutingService, hasSavedOuting, latestGeneration, outingChangeView, outingChatContext, outingReviewView, savedOuting, type OutingReader } from "./outing-service";
 import type { OutingChangeRequest } from "@tripquest/agent/outing-change";
 import { fingerprint } from "@tripquest/application/fingerprint";
@@ -34,11 +38,11 @@ import type { PreferenceRepository } from "@tripquest/application/preferences";
 import type { StoredJourney } from "@tripquest/application";
 import type { AdjustRequest } from "@tripquest/application/real-adjust";
 import { adjustCardView, chatTripOf, requestByIds } from "./adjust-service";
-import type { NearbyPlaceProvider, PlaceLookupProvider, WeatherForecastData, WeatherProvider } from "@tripquest/providers";
+import type { CityResolver, MobilityProvider, NearbyPlaceProvider, PlaceLookupProvider, WeatherForecastData, WeatherProvider } from "@tripquest/providers";
 import { straightMeters } from "@tripquest/application/leg-choice";
 import { readRealPlaceMode } from "../real-places/real-mode";
 import { storedChoicesView } from "./choices-view";
-import { createUserUsage, meteredAmap, meteredIntentRouter, meteredKnowledge, meteredWebSearch, RUN_BUDGET_MESSAGE } from "../usage/usage";
+import { createUserUsage, meteredAmap, meteredIntentRouter, meteredKnowledge, meteredWebSearch, reserveModel, RUN_BUDGET_MESSAGE } from "../usage/usage";
 import { currentRun, type AgentRun } from "@tripquest/agent/runs";
 import { traced } from "../runs/runs";
 import type {
@@ -81,6 +85,8 @@ export interface ConversationServiceOptions {
   /** V2.11：出游分配时补查地点（测试注入演示地点）；缺省用高德。 */
   places?: () => PlaceLookupProvider;
   nearby?: () => NearbyPlaceProvider;
+  /** V3.6：补车站时按城市搜车站（测试注入演示地点）；缺省用高德。 */
+  stations?: () => Pick<MobilityProvider, "searchPlaces"> & Partial<CityResolver>;
   /** 读取这段对话已保存的行程，给聊天提供当前安排与进度上下文。 */
   journeys?: () => {
     findCurrentJourney(journeyId: string): Promise<StoredJourney | null>;
@@ -127,6 +133,12 @@ export function progressText(progress: ChatProgress, nowMs: number): string {
 }
 
 type Summarizer = { summarize(input: SummaryInput, signal: AbortSignal): Promise<string | null> };
+
+// V3.5 的客户端编号只认得已经存好的那一轮；一轮常要十几秒，页面断线 1 秒后就重发，这时还查不到它。
+// 正在跑的轮次按“用户 + 客户端编号”记在进程里（同 jobs.ts 放在 globalThis 上），重发的接到同一次上。
+const turnStore = globalThis as typeof globalThis & { __tripquestTurns?: Map<string, Promise<TurnReply>> };
+turnStore.__tripquestTurns ??= new Map();
+const runningTurns = turnStore.__tripquestTurns;
 /** 与对话 runner 相同的窗口：本轮之外最近 11 条历史；更早的进摘要（stages/V2.9.md §3.5）。 */
 const HISTORY_WINDOW = 11;
 
@@ -181,6 +193,19 @@ export function createConversationService(options: ConversationServiceOptions = 
     return journey ? chatTripOf(journey, picked) : null;
   }
   const nearby = () => options.nearby?.() ?? amap("chat-location");
+  const stations = () => options.stations?.() ?? amap("chat");
+
+  /**
+   * 出游卡片每轮之后由代码补（V3.6 §3.4、V4.3 §3.2–3.4）：从原话认“住在哪”、日子和住宿对不上的车挪到对的天、补车站和
+   * 漏掉的往返（都是暂定、可改），补了什么在回复后面加一句；模型的回复不动。查不了地图或没补上时照旧。
+   */
+  async function afterTurn(draft: RequirementsDraft, previous: RequirementsDraft, changed: boolean, messages: readonly StoredMessage[], text: string) {
+    const userTexts = [...messages.flatMap((message) => (message.role === "user" && message.kind === "text" ? [message.body.text] : [])), text];
+    const filled = await Promise.resolve()
+      .then(() => afterOutingTurn(draft, userTexts, stations(), AbortSignal.timeout(10_000), { changed, previous }))
+      .catch(() => null);
+    return filled?.note || filled?.ask ? filled : null;
+  }
 
   async function profileConfig(): Promise<unknown> {
     const profilePath = resolve(root, "agent-models.local.json");
@@ -235,7 +260,8 @@ export function createConversationService(options: ConversationServiceOptions = 
       config,
       profileId: env.AGENT_MODEL_PROFILE ?? "",
       environment: env,
-      beforeRequest: () => ledger.reserve("model", "model", "chat"),
+      // 账本暂时记不了时这一轮按“暂时连不上”说，不说今天的次数用完了。
+      beforeRequest: reserveModel(ledger, "chat", () => new ChatRunError("model_error")),
     });
     const provider = amap("chat");
     // 地图不能回答的资讯问题交给联网搜索，默认启用，可由 WEB_SEARCH_ENABLED 关闭。
@@ -254,6 +280,20 @@ export function createConversationService(options: ConversationServiceOptions = 
       ...(knowledge ? { knowledge } : {}),
       router: meteredIntentRouter({ environment: env, usage: ledger, config }),
     });
+  }
+
+  /**
+   * 同一个客户端编号的这一轮还在跑（网络断了、页面重发）：等它的结果，不再跑一遍模型，第一条消息也不再建一段新对话。
+   * 重发的那次没有进度提示；跑完之后再来的重发照旧按已存的消息回（runTurn）。
+   */
+  function once(clientId: string | undefined, run: () => Promise<TurnReply>): Promise<TurnReply> {
+    if (!clientId) return run();
+    const key = `${options.userId ?? ""}:${clientId}`;
+    const running = runningTurns.get(key);
+    if (running) return running;
+    const started = run().finally(() => runningTurns.delete(key));
+    runningTurns.set(key, started);
+    return started;
   }
 
   /** 一条用户输入执行一轮 Agent，完成后将本轮消息与草案原子追加到对话。V3.0：一轮一个 chat_turn 根运行。 */
@@ -363,12 +403,20 @@ export function createConversationService(options: ConversationServiceOptions = 
     const messages: NewMessage[] = [{ role: "user", kind: "text", body: { text, ...(clientId ? { clientId } : {}) } }];
     let draft: RequirementsDraft | undefined;
     if (result.status === "completed") {
+      const rides = result.draft.mode === "outing"
+        ? await afterTurn(result.draft, found.conversation.draft, result.draftChanged, found.messages, text)
+        : null;
+      // V4.3：模型没改卡片、代码认出了“住在哪”时，卡片也算改了（要存、要出新卡片）。
+      if (rides) result = { ...result, draft: rides.draft, draftChanged: result.draftChanged || rides.draft !== result.draft };
+      // 说明在回复后面，超长时截短模型的话，说明保留。V4.4：有问句时回复里只问这一个。
+      const tail = rides ? `${rides.note ?? ""}${rides.ask ?? ""}` : "";
+      const replyText = rides ? withAfterTurn(result.reply.text.slice(0, 1000 - tail.length - 2), rides) : result.reply.text;
       messages.push({
         role: "assistant",
         kind: "text",
         body: {
-          text: result.reply.text,
-          asking: result.reply.asking,
+          text: replyText,
+          asking: result.reply.asking || !!rides?.ask,
           ...(result.reply.sources?.length ? { sources: [...result.reply.sources] } : {}),
           ...(result.reply.places?.length ? { places: [...result.reply.places] } : {}),
         },
@@ -431,15 +479,17 @@ export function createConversationService(options: ConversationServiceOptions = 
     // 卡片不能直接绑定任意新地点，只能从服务端已有候选中选择。
     const result = applyDraftPatch(found.conversation.draft, patch, new Map(), { nowMs: now() });
     if (result.status === "invalid") return { status: "invalid", code: result.code };
+    // V4.4：用户在卡片上自己改的日期就是用户给的，不再暂定。
+    const draft = patch.date !== undefined || patch.dates !== undefined ? datesFromCard(result.draft) : result.draft;
     const updated = await store.updateDraft({
       conversationId,
       expectedFingerprint,
-      draft: result.draft,
+      draft,
       now: new Date(now()),
     });
     if (updated.status !== "updated") return { status: updated.status };
     const weatherChipFor = await weatherLookup();
-    return { status: "ok", card: { ...cardView(result.draft, now(), await weatherChipFor(result.draft)), fingerprint: fingerprint(result.draft) } };
+    return { status: "ok", card: { ...cardView(draft, now(), await weatherChipFor(draft)), fingerprint: fingerprint(draft) } };
   }
 
   /**
@@ -456,6 +506,7 @@ export function createConversationService(options: ConversationServiceOptions = 
       now,
       repository,
       places: () => options.places?.() ?? amap("plan"),
+      stations: () => options.stations?.() ?? amap("plan"),
       allocator: async () => {
         // 测试里没有模型：只用规则分配。
         if (options.runner) return undefined;
@@ -730,9 +781,10 @@ export function createConversationService(options: ConversationServiceOptions = 
     /** V2.10：city 是打开页面时定位得到的城市（页面带来），先写进卡片再跑第一轮；没有就是缺省杭州。 */
     // V3.0：新对话的第一轮和后面的轮次一样是 chat_turn 根运行（turn 沿用这个运行）。
     start: (text: string, onProgress?: (text: string) => void, city?: DraftCity, mode?: "outing", clientId?: string) =>
-      traced({ trigger: "chat_turn", userId: options.userId ?? null }, () => start(text, onProgress, city, mode, clientId)),
+      once(clientId, () => traced({ trigger: "chat_turn", userId: options.userId ?? null }, () => start(text, onProgress, city, mode, clientId))),
     locateCity: (point: { longitude: number; latitude: number }) => traced({ trigger: "locate", userId: options.userId ?? null }, () => locateCity(point)),
-    send: turn,
+    send: (conversationId: string, text: string, expectedCount: number, onProgress?: (text: string) => void, clientId?: string) =>
+      once(clientId, () => turn(conversationId, text, expectedCount, onProgress, clientId)),
     switchMode: (...args: Parameters<typeof switchMode>) => traced({ trigger: "switch_mode", userId: options.userId ?? null }, () => switchMode(...args)),
     editDraft: (...args: Parameters<typeof editDraft>) => traced({ trigger: "edit_card", userId: options.userId ?? null }, () => editDraft(...args)),
     allocate,
@@ -875,6 +927,7 @@ export function cardView(
     city: draftCity(draft).name,
     date: draft.date,
     dateLabel: draft.date ? dateLabel(draft.date, nowMs) : null,
+    ...(draft.date && draft.datesGuessed ? { dateGuessed: true as const } : {}),
     window: draft.startsAt && draft.endsAt ? { startsAt: draft.startsAt, endsAt: draft.endsAt } : null,
     start: place(draft.start),
     end: place(draft.end),
@@ -906,7 +959,7 @@ function outingView(outing: OutingDraft, place: (value: DraftPlace | null) => Ca
   const label = !outing.dates ? "" : days === 1 ? `${fromMonth}月${fromDay}日 · 1 天`
     : `${fromMonth}月${fromDay}日–${toMonth === fromMonth ? "" : `${toMonth}月`}${toDay}日 · ${days} 天`;
   return {
-    dates: outing.dates ? { ...outing.dates, label, days } : null,
+    dates: outing.dates ? { ...outing.dates, label, days, ...(draft?.datesGuessed ? { guessed: true as const } : {}) } : null,
     startAt: outing.startAt,
     endAt: outing.endAt,
     dailyWindow: outing.dailyWindow,
@@ -917,9 +970,13 @@ function outingView(outing: OutingDraft, place: (value: DraftPlace | null) => Ca
         place: place(night?.place ?? null),
         ...(night?.onBoard ? { onBoard: true as const } : {}),
         ...(night?.source === "suggested" && night.place ? { suggested: true as const } : {}),
+        ...(night?.source === "suggested" && night.others?.length
+          ? { others: night.others.map((choice) => ({ placeId: choice.externalId, name: choice.name })) }
+          : {}),
       };
     }),
     ...(outing.lodgingAreas?.length ? { lodgingAreas: outing.lodgingAreas.map((area) => area.text) } : {}),
+    ...(outing.stays?.length ? { stays: outing.stays.map((item) => ({ nights: [...item.nights], text: staysLabel([item]) })) } : {}),
     transports: outing.transports.map((item) => ({
       id: item.id,
       day: item.day,
@@ -930,9 +987,19 @@ function outingView(outing: OutingDraft, place: (value: DraftPlace | null) => Ca
       arriveAt: item.arriveAt,
       overnight: item.arriveDay === "next",
       confirmed: !!item.overnightConfirmed,
+      ...(item.suggested ? { suggested: suggestedView(item.suggested) } : {}),
     })),
+    ...(draft && [...rideHints(draft), ...stayHints(draft)].length ? { rideHints: [...rideHints(draft), ...stayHints(draft)] } : {}),
     ...(outing.allocation && draft ? { allocation: allocationView(outing, draft) } : {}),
   };
+}
+
+/** V3.6：暂定的交通和车站，以及“换一个”的候选。 */
+function suggestedView(suggested: NonNullable<OutingDraft["transports"][number]["suggested"]>): NonNullable<OutingCardView["transports"][number]["suggested"]> {
+  const others = (end: "from" | "to") => suggested[end]
+    ? { [end]: suggested[end]!.others.map((choice) => ({ placeId: choice.externalId, name: choice.name })) }
+    : {};
+  return { ...(suggested.ride ? { ride: true as const } : {}), ...(suggested.day ? { day: true as const } : {}), ...others("from"), ...others("to") };
 }
 
 /** 分配里的编号换成名称（地点名、兴趣原话），日期写成“10月17日”。 */

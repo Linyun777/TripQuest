@@ -192,7 +192,8 @@ export function ChatController({
   const [switching, setSwitching] = useState(false);
 
   async function send(text: string) {
-    if (busy || !availability.enabled) return;
+    // 确认跨天改动要复核路线、再把新的各天写进对话，这几秒里不发新消息（两边都按条数写，会互相挤掉）。
+    if (busy || confirmingChange || !availability.enabled) return;
     // 先展示的气泡只是页面临时态；消息计数只在服务端整轮提交成功后推进。
     // 响应到达时用已保存消息替换它，避免刷新或冲突后把乐观消息当成正式记录。
     const optimistic: ChatMessageView = { id: `pending-${Date.now()}`, role: "user", kind: "text", text };
@@ -952,7 +953,7 @@ export function ChatController({
         <Composer
           onSend={send}
           suggestion={suggestion}
-          disabled={busy || !availability.enabled}
+          disabled={busy || !!confirmingChange || !availability.enabled}
           autoFocus={!initialText}
           placeholder={!availability.enabled ? "对话规划暂不可用"
             : trip.view ? "行程有变化直接说，比如：越剧不去了，换成喝茶"

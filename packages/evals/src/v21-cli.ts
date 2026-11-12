@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { agentRows, evalCase } from "./agent-summary";
+import { agentRows, evalCase, repairTraces } from "./agent-summary";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -25,7 +25,7 @@ import { KNOWLEDGE_CASES, KNOWLEDGE_DATASET_VERSION, knowledgeDatasetDigest } fr
 import { runKnowledgeCase, type KnowledgeFlow, type KnowledgeRow } from "./v21/knowledge-run";
 import { ROUTE_CASES, ROUTE_DATASET_VERSION, routeDatasetDigest } from "./v29/route-dataset";
 import { currentProductRouter, fromIntentRouter, runRouteCase, type EvalRouter, type RouteRow } from "./v29/route-run";
-import { regexRouter } from "@tripquest/agent/intent";
+import { createRegexCascadeRouter, regexRouter } from "@tripquest/agent/intent";
 import { createEmbeddingIntentRouter, DEFAULT_CASCADE_ROUTER, DEFAULT_EMBEDDING_ROUTER, INTENT_EXEMPLARS_VERSION } from "@tripquest/agent/intent-embedding";
 import { DashScopeEmbeddingProvider } from "@tripquest/providers/server";
 import { tuneEmbeddingRouter } from "./v29/route-tune";
@@ -54,8 +54,21 @@ import { REVIEW_CASES, REVIEW_DATASET_VERSION, reviewDatasetDigest } from "./v32
 import { runReviewCase, type ReviewRow } from "./v32/review-run";
 import { LODGING_CASES, LODGING_DATASET_VERSION, lodgingDatasetDigest } from "./v33/lodging-dataset";
 import { runLodgingCase, type LodgingRow } from "./v33/lodging-run";
+import { RELIABILITY_CASES, RELIABILITY_DATASET_VERSION, reliabilityDatasetDigest } from "./v42/reliability-dataset";
+import { runReliabilityCase, type ReliabilityRow } from "./v42/reliability-run";
 import { SPLIT_CHAT_CASES, SPLIT_DATASET_VERSION, SPLIT_OUTING_CASES, splitDatasetDigest } from "./v34/split-dataset";
 import { runSplitOutingCase, type SplitOutingRow } from "./v34/split-run";
+import { RIDES_CASES, RIDES_VERSION, ridesDigest } from "./v36/rides-dataset";
+import { fillRidesAfterTurn } from "./v36/rides-run";
+import { STAYS_CASES, STAYS_DATASET_VERSION, staysDigest } from "./v43/stays-dataset";
+import { staysAfterTurn } from "./v43/stays-run";
+import { DATES_CASES, DATES_DATASET_VERSION, datesDigest } from "./v44/dates-dataset";
+import { datesAfterTurn } from "./v44/dates-run";
+import { JUDGE_CASES, JUDGE_DATASET_VERSION, judgeDigest } from "./v47/judge-dataset";
+import { runJudgeCase, type JudgeRow } from "./v47/judge-run";
+import { REPAIR_CASES, REPAIR_DATASET_VERSION, repairDigest } from "./v47/repair-dataset";
+import { runRepairCase, type RepairRow } from "./v47/repair-run";
+import { DATES45_CASES, DATES45_DATASET_VERSION, dates45Digest } from "./v45/dates-dataset";
 import { ACCEPT_ALLOCATION_CASES, ACCEPT_CHAT_CASES, ACCEPT_FIX_VERSION, ACCEPT_OUTING_CASES, acceptFixDigest } from "./v211/acceptance-fix-dataset";
 import { OUTING_PLAN_VERSION, outingPlanDigest, TRANSFER_DAY_CASES, ALLOCATION_CASES, OUTING_E2E_CASES, CROSS_DAY_CASES } from "./v211/outing-plan-dataset";
 import { PLAY_CASES, PLAY_DATASET_VERSION, playDatasetDigest } from "./v210/play-dataset";
@@ -81,9 +94,9 @@ function git(): V21Report["git"] {
   }
 }
 
-type Suite = "plan" | "intake" | "intent" | "short" | "adjust" | "info" | "notes" | "knowledge" | "route" | "route-tune" | "talk" | "pref" | "long" | "fix" | "picks" | "e2e" | "city" | "kbcity" | "play" | "shortcity" | "daily" | "stay" | "outing" | "transfer" | "allocation" | "trip" | "crossday" | "accept" | "review" | "lodging" | "split" | "all";
+type Suite = "plan" | "intake" | "intent" | "short" | "adjust" | "info" | "notes" | "knowledge" | "route" | "route-tune" | "talk" | "pref" | "long" | "fix" | "picks" | "e2e" | "city" | "kbcity" | "play" | "shortcity" | "daily" | "stay" | "outing" | "transfer" | "allocation" | "trip" | "crossday" | "accept" | "review" | "lodging" | "split" | "rides" | "reliability" | "stays" | "dates" | "dates45" | "judge" | "repair" | "all";
 /** V2.9 suites run only when named (not in "all"). */
-const V29_SUITES: readonly Suite[] = ["route", "route-tune", "talk", "pref", "long", "fix", "picks", "e2e", "city", "kbcity", "play", "shortcity", "daily", "stay", "outing", "transfer", "allocation", "trip", "crossday", "accept", "review", "lodging", "split"];
+const V29_SUITES: readonly Suite[] = ["route", "route-tune", "talk", "pref", "long", "fix", "picks", "e2e", "city", "kbcity", "play", "shortcity", "daily", "stay", "outing", "transfer", "allocation", "trip", "crossday", "accept", "review", "lodging", "split", "rides", "reliability", "stays", "dates", "dates45", "judge", "repair"];
 interface Options {
   readonly live: boolean;
   readonly suite: Suite;
@@ -95,12 +108,12 @@ interface Options {
   /** V2.9.2：`--held-out v292` 只跑分流的新留出题（锁定后每种实现跑一次正式结果）。 */
   readonly newHoldout: boolean;
   /** V2.9.3：对话 Agent 用哪种分流（缺省正则，与产品相同）。 */
-  readonly router: "regex" | "deepseek";
+  readonly router: "regex" | "deepseek" | "regex+deepseek";
   /** V2.4 short cases: "short" is the new flow; "day" is the old day planner (the baseline). */
-  readonly flow: "day" | "short" | "adjust" | "per_stop" | KnowledgeFlow | "current" | "regex" | "deepseek" | "embedding" | "cascade" | "summary" | "jev" | "jev13" | null;
+  readonly flow: "day" | "short" | "adjust" | "per_stop" | KnowledgeFlow | "current" | "regex" | "deepseek" | "embedding" | "cascade" | "summary" | "jev" | "jev13" | "no_fill" | "regex+deepseek" | null;
 }
 
-const USAGE = "Usage: --policy scripted|live [--suite plan|intake|intent|short|adjust|info|notes|knowledge|route|route-tune|talk|pref|long|fix|picks|e2e|city|kbcity|play|shortcity|daily|stay|outing|transfer|allocation|trip|crossday|accept|review|lodging|split|all] [--router regex|deepseek] [--case P10,I03] [--repeat 1-3] [--held-out yes|v292] [--flow day|short|adjust|per_stop|kb|web_only|no_tools|current|regex|deepseek|embedding|cascade|summary|jev|jev13] (default: the suite's new flow)";
+const USAGE = "Usage: --policy scripted|live [--suite plan|intake|intent|short|adjust|info|notes|knowledge|route|route-tune|talk|pref|long|fix|picks|e2e|city|kbcity|play|shortcity|daily|stay|outing|transfer|allocation|trip|crossday|accept|review|lodging|split|rides|reliability|stays|dates|dates45|judge|repair|all] [--router regex|deepseek|regex+deepseek] [--case P10,I03] [--repeat 1-3] [--held-out yes|v292] [--flow day|short|adjust|per_stop|kb|web_only|no_tools|current|regex|deepseek|embedding|cascade|summary|jev|jev13|no_fill|regex+deepseek] (default: the suite's new flow)";
 
 /**
  * --policy scripted|live, --suite plan|intake|intent|all (intent: the V2.3 cases only),
@@ -121,10 +134,10 @@ function parse(argv: readonly string[]): Options {
   const repeat = Number(values.get("--repeat") ?? "1");
   const heldOut = values.get("--held-out");
   const flow = values.get("--flow") ?? null;
-  const suites = ["plan", "intake", "intent", "short", "adjust", "info", "notes", "knowledge", "route", "route-tune", "talk", "pref", "long", "fix", "picks", "e2e", "city", "kbcity", "play", "shortcity", "daily", "stay", "outing", "transfer", "allocation", "trip", "crossday", "accept", "review", "lodging", "split", "all"];
-  const flows = ["day", "short", "adjust", "per_stop", "kb", "web_only", "no_tools", "current", "regex", "deepseek", "embedding", "cascade", "summary", "jev", "jev13"];
+  const suites = ["plan", "intake", "intent", "short", "adjust", "info", "notes", "knowledge", "route", "route-tune", "talk", "pref", "long", "fix", "picks", "e2e", "city", "kbcity", "play", "shortcity", "daily", "stay", "outing", "transfer", "allocation", "trip", "crossday", "accept", "review", "lodging", "split", "rides", "reliability", "stays", "dates", "dates45", "judge", "repair", "all"];
+  const flows = ["day", "short", "adjust", "per_stop", "kb", "web_only", "no_tools", "current", "regex", "deepseek", "embedding", "cascade", "summary", "jev", "jev13", "no_fill", "regex+deepseek"];
   if (!["scripted", "live"].includes(policy) || !suites.includes(suite) ||
-    ![1, 2, 3].includes(repeat) || (heldOut !== undefined && heldOut !== "yes" && heldOut !== "v292") || (flow !== null && !flows.includes(flow)) || !["regex", "deepseek"].includes(values.get("--router") ?? "regex")) {
+    ![1, 2, 3].includes(repeat) || (heldOut !== undefined && heldOut !== "yes" && heldOut !== "v292") || (flow !== null && !flows.includes(flow)) || !["regex", "deepseek", "regex+deepseek"].includes(values.get("--router") ?? "regex")) {
     throw new Error(USAGE);
   }
   const known = new Set([
@@ -154,7 +167,7 @@ async function liveModels() {
   const { createDeepSeekIntentRouter } = await import("@tripquest/agent/intent-live");
   const { createChatSummarizer } = await import("@tripquest/agent/chat-summary");
   const { createAllocationRequest } = await import("@tripquest/agent/outing-allocate");
-  const { createReviewRequest } = await import("@tripquest/agent/outing-review-live");
+  const { createReviewRequest, createJudgeRequest } = await import("@tripquest/agent/outing-review-live");
   const { profile } = resolveProfile(config, profileId, process.env);
   const budget = v21ModelBudget(outputRoot);
   const beforeRequest = async () => {
@@ -174,6 +187,7 @@ async function liveModels() {
     summarizer: () => createChatSummarizer(options),
     allocator: () => createAllocationRequest(options),
     reviewer: () => createReviewRequest(options),
+    judge: () => createJudgeRequest(options),
   };
 }
 
@@ -192,9 +206,10 @@ async function main() {
     .filter((item) => !cases || cases.has(item.id));
   const models = live ? await liveModels() : null;
   // V2.9.3：--router deepseek 时所有对话评测都用 DeepSeek 分流（失败或超时仍退回正则，与产品相同）。
-  if (chatRouter === "deepseek") {
-    if (!models) throw new Error("--router deepseek needs --policy live");
-    setEvalChatRouter(models.router());
+  if (chatRouter === "deepseek" || chatRouter === "regex+deepseek") {
+    if (!models) throw new Error(`--router ${chatRouter} needs --policy live`);
+    // V4.1：regex+deepseek 是级联（正则拿不准的才问 DeepSeek）。
+    setEvalChatRouter(chatRouter === "deepseek" ? models.router() : createRegexCascadeRouter(models.router()));
   }
   const controller = new AbortController();
   process.on("SIGINT", () => controller.abort());
@@ -315,6 +330,7 @@ async function main() {
     // Dev cases are in the exemplar library: route them leaving their own exemplar out.
     const router: EvalRouter = flow === "regex" ? fromIntentRouter(regexRouter)
       : flow === "deepseek" ? fromIntentRouter(needModel().router())
+        : flow === "regex+deepseek" ? fromIntentRouter(createRegexCascadeRouter(needModel().router()))
         : flow === "embedding" ? fromIntentRouter(createEmbeddingIntentRouter({ embedder: embedder(), leaveOut: true, settings: DEFAULT_EMBEDDING_ROUTER }))
           : flow === "cascade" ? fromIntentRouter(createEmbeddingIntentRouter({ embedder: embedder(), leaveOut: true, escalate: needModel().router(), settings: DEFAULT_CASCADE_ROUTER }))
             // V2.9.2：Jev 1.14（固定版本）与 1.13；JEV_INTENT_MARGIN 只给选阈值用（缺省用选定的值）。
@@ -323,7 +339,7 @@ async function main() {
               process.env.JEV_INTENT_MARGIN ? { margin: Number(process.env.JEV_INTENT_MARGIN) } : {},
             ), flow)
               : currentProductRouter;
-    const rounds = flow === "deepseek" || flow === "embedding" || flow === "cascade" || flow === "jev" || flow === "jev13" ? repeat : 1;
+    const rounds = flow === "deepseek" || flow === "regex+deepseek" || flow === "embedding" || flow === "cascade" || flow === "jev" || flow === "jev13" ? repeat : 1;
     for (let round = 0; round < rounds; round += 1) {
       const pool = newHoldout ? V292_ROUTE_CASES : ROUTE_CASES.filter((entry) => heldOut || !entry.heldOut);
       for (const item of pool.filter((entry) => !cases || cases.has(entry.id))) {
@@ -378,7 +394,7 @@ async function main() {
       const allocator = models.allocator();
       for (const item of asked) {
         if (controller.signal.aborted) break;
-        trips.push(await evalCase("trips", item.id, () => runOutingCase(item, "live", { day: models.day, allocator, reviewer: models.reviewer() })));
+        trips.push(await evalCase("trips", item.id, () => runOutingCase(item, "live", { day: models.day, allocator, reviewer: models.reviewer(), judge: models.judge() })));
       }
     }
   }
@@ -390,7 +406,7 @@ async function main() {
     for (let round = 0; models && round < repeat; round += 1) {
       for (const item of asked) {
         if (controller.signal.aborted) break;
-        reviews.push(await evalCase("reviews", item.id, () => runReviewCase(item, "live", { day: models.day, reviewer: models.reviewer() })));
+        reviews.push(await evalCase("reviews", item.id, () => runReviewCase(item, "live", { day: models.day, reviewer: models.reviewer(), judge: models.judge() })));
       }
     }
   }
@@ -403,6 +419,18 @@ async function main() {
       for (const item of asked) {
         if (controller.signal.aborted) break;
         lodgings.push(await evalCase("lodgings", item.id, () => runLodgingCase(item, "live", { day: models.day })));
+      }
+    }
+  }
+  // V4.2 规划可靠性（stages/V4.2.md §4.1）：评测世界只走一日规划，同住处题，脚本模型跑一遍、模型按 repeat 跑。
+  const reliabilities: ReliabilityRow[] = [];
+  if (suite === "reliability") {
+    const asked = RELIABILITY_CASES.filter((item) => !cases || cases.has(item.id));
+    for (const item of asked) reliabilities.push(await runReliabilityCase(item, "scripted"));
+    for (let round = 0; models && round < repeat; round += 1) {
+      for (const item of asked) {
+        if (controller.signal.aborted) break;
+        reliabilities.push(await evalCase("reliabilities", item.id, () => runReliabilityCase(item, "live", models.day, controller.signal)));
       }
     }
   }
@@ -430,6 +458,28 @@ async function main() {
     }
   }
   // V2.9.2 挑地点：同一批固定候选交给 DeepSeek（现有）或 Jev，不调高德。
+  // V4.7 第 1 步闸门（stages/V4.7.md §4.1）：人造方案判断准不准，只用模型。
+  const judges: JudgeRow[] = [];
+  if (suite === "judge" && models) {
+    const asked = JUDGE_CASES.filter((item) => (heldOut || !item.heldOut) && (!cases || cases.has(item.id)));
+    for (let round = 0; round < repeat; round += 1) {
+      for (const item of asked) {
+        if (controller.signal.aborted) break;
+        judges.push(await evalCase("judges", item.id, () => runJudgeCase(item, models.judge())));
+      }
+    }
+  }
+  // V4.7 修复效果（stages/V4.7.md §4.2）：需求题，判定由代码查；OUTING_REVIEW 选 single / agent。
+  const repairs: RepairRow[] = [];
+  if (suite === "repair" && models) {
+    const asked = REPAIR_CASES.filter((item) => (heldOut || !item.heldOut) && (!cases || cases.has(item.id)));
+    for (let round = 0; round < repeat; round += 1) {
+      for (const item of asked) {
+        if (controller.signal.aborted) break;
+        repairs.push(await evalCase("repairs", item.id, () => runRepairCase(item, { day: models.day, reviewer: models.reviewer(), judge: models.judge() })));
+      }
+    }
+  }
   const picks: PickRow[] = [];
   if (suite === "picks") {
     // --flow deepseek（现有，缺省）| jev | jev13；JEV_PICK_FIT 只给选阈值用。
@@ -450,7 +500,7 @@ async function main() {
   }
   // V2.9 conversations (chitchat and advice, preferences, long conversations): live model only.
   const conversations: ConversationRow[] = [];
-  const v29Sets: Record<string, readonly ConversationCase[]> = { talk: TALK_CASES, pref: PREF_CASES, long: LONG_CASES, fix: FIX_CASES, e2e: ROUTE_E2E_CASES, city: CITY_CASES, kbcity: KB_CITY_CASES, daily: DAILY_CITY_CASES, stay: STAY_CHAT_CASES, outing: OUTING_INTAKE_CASES, accept: ACCEPT_CHAT_CASES, split: SPLIT_CHAT_CASES };
+  const v29Sets: Record<string, readonly ConversationCase[]> = { talk: TALK_CASES, pref: PREF_CASES, long: LONG_CASES, fix: FIX_CASES, e2e: ROUTE_E2E_CASES, city: CITY_CASES, kbcity: KB_CITY_CASES, daily: DAILY_CITY_CASES, stay: STAY_CHAT_CASES, outing: OUTING_INTAKE_CASES, accept: ACCEPT_CHAT_CASES, split: SPLIT_CHAT_CASES, rides: RIDES_CASES, stays: STAYS_CASES, dates: DATES_CASES, dates45: DATES45_CASES };
   if (models && v29Sets[suite]) {
     const asked = v29Sets[suite].filter((item) => (heldOut || !item.heldOut) && (!cases || cases.has(item.id)));
     for (let round = 0; round < repeat; round += 1) {
@@ -459,7 +509,11 @@ async function main() {
         // --flow summary（长对话对照 B）：窗口外的旧消息先压成摘要。V2.9.1 题集按产品现状总是带摘要。
         const summarizer = flow === "summary" || suite === "fix" || suite === "e2e" ? models.summarizer() : null;
         const summarize = summarizer ? (input: Parameters<typeof summarizer.summarize>[0]) => summarizer.summarize(input, AbortSignal.timeout(20_000)) : undefined;
-        conversations.push(await evalCase("conversations", item.id, () => runConversationRow(suite as ConversationRow["suite"], item, models.chat, summarize)));
+        // V3.6：rides 题集每轮之后补交通（--flow no_fill 是之前的产品）。
+        // V4.3：stays 题集每轮之后走产品的补卡片（认“住在哪”、挪车的日子、补交通）。
+        // V4.4：dates 题集同样每轮之后走产品的补卡片。
+        const afterTurn = suite === "stays" ? staysAfterTurn : suite === "dates" || suite === "dates45" ? datesAfterTurn : suite === "rides" && flow !== "no_fill" ? fillRidesAfterTurn : undefined;
+        conversations.push(await evalCase("conversations", item.id, () => runConversationRow(suite as ConversationRow["suite"], item, models.chat, summarize, afterTurn)));
       }
     }
   }
@@ -520,8 +574,28 @@ async function main() {
       v33: {
         lodging: { version: LODGING_DATASET_VERSION, digest: lodgingDatasetDigest(), cases: LODGING_CASES.length },
       },
+      v43: {
+        stays: { version: STAYS_DATASET_VERSION, digest: staysDigest(), cases: STAYS_CASES.length },
+      },
+      v44: {
+        dates: { version: DATES_DATASET_VERSION, digest: datesDigest(), cases: DATES_CASES.length },
+      },
+      v47: {
+        judge: { version: JUDGE_DATASET_VERSION, digest: judgeDigest(), cases: JUDGE_CASES.length },
+        repair: { version: REPAIR_DATASET_VERSION, digest: repairDigest(), cases: REPAIR_CASES.length },
+      },
+      v45: {
+        dates: { version: DATES45_DATASET_VERSION, digest: dates45Digest(), cases: DATES45_CASES.length },
+      },
+      v42: {
+        reliability: { version: RELIABILITY_DATASET_VERSION, digest: reliabilityDatasetDigest(), cases: RELIABILITY_CASES.length },
+      },
       v34: {
         split: { version: SPLIT_DATASET_VERSION, digest: splitDatasetDigest(), cases: SPLIT_CHAT_CASES.length + SPLIT_OUTING_CASES.length },
+      },
+      v36: {
+        // --flow no_fill 是补交通之前的产品（基线）。
+        rides: { version: RIDES_VERSION, digest: ridesDigest(), cases: RIDES_CASES.length, flow: flow === "no_fill" ? "no_fill" : "fill" },
       },
       v292: {
         routeHoldout: { version: V292_ROUTE_DATASET_VERSION, digest: v292RouteDigest(), cases: V292_ROUTE_CASES.length },
@@ -550,9 +624,13 @@ async function main() {
     ...(trips.length ? { trips } : {}),
     ...(crossDays.length ? { crossDays } : {}),
     ...(reviews.length ? { reviews } : {}),
+    ...(judges.length ? { judges } : {}),
+    ...(repairs.length ? { repairs } : {}),
     ...(lodgings.length ? { lodgings } : {}),
+    ...(reliabilities.length ? { reliabilities } : {}),
     ...(splitOutings.length ? { splitOutings } : {}),
     agents: [...agentRows()],
+    ...(repairTraces().length ? { repairTraces: [...repairTraces()] } : {}),
   };
   const folder = join(outputRoot, report.runId);
   await mkdir(folder, { recursive: true });

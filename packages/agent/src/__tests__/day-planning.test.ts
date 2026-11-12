@@ -170,6 +170,44 @@ describe("bounded day graph and tools", () => {
     });
   });
 
+  it("V4.2: sends a finish back once when a named place was never tried and the day still has time for it", async () => {
+    const contexts: DayDecisionContext[] = [];
+    const model = createDayScriptedModel((context) => {
+      contexts.push(context);
+      return [
+        { action: "try_itinerary", orderedActivityIds: ["a1"] },
+        { action: "finish", attemptId: "attempt-1" },
+        { action: "try_itinerary", orderedActivityIds: ["a1", "a2"] },
+        { action: "finish", attemptId: "attempt-2" },
+      ][contexts.length - 1];
+    });
+    const result = await run(problem([visit(1), visit(2, "optional")], []), { model });
+    expect(contexts[2]!.feedback?.code).toMatch(/^named_untried: a2 \(.+\) was never in a try; free \d\d:\d\d-\d\d:\d\d, try \["a1","a2"\]; if it does not fit, finish attempt-1$/);
+    if (result.status !== "completed" || result.outcome !== "draft") throw new Error("expected draft");
+    expect(result.draft.activities.map((activity) => activity.activityId)).toEqual(["a1", "a2"]);
+  });
+
+  it("V4.2: sends it back only once, and says why a named place that was tried did not fit", async () => {
+    // 模型不理打回、又交同一个：照常结束，原因用通用说法。
+    const ignoring = createDayScriptedModel((context) => context.latestAttempt
+      ? { action: "finish", attemptId: "attempt-1" }
+      : { action: "try_itinerary", orderedActivityIds: ["a1"] });
+    const once = await run(problem([visit(1), visit(2, "optional")], []), { model: ignoring });
+    expect(once).toMatchObject({ status: "completed", outcome: "draft", counts: { semanticRepairs: 1 } });
+    // 试过放不下（7 小时停留超出 10:00–18:00）：不打回，没排进去的说明里写试排为什么不行。
+    const long = { ...visit(2, "optional"), stayMinutes: 420 };
+    const tried = await run(problem([visit(1), long], []), { model: actions([
+      { action: "try_itinerary", orderedActivityIds: ["a1", "a2"] },
+      { action: "try_itinerary", orderedActivityIds: ["a1"] },
+      { action: "finish", attemptId: "attempt-2" },
+    ]) });
+    if (tried.status !== "completed" || tried.outcome !== "draft") throw new Error("expected draft");
+    expect(tried.counts.semanticRepairs).toBe(0);
+    expect(tried.draft.omittedOptional).toEqual([
+      expect.objectContaining({ activityId: "a2", reason: "试排过，加上它回到终点会太晚。" }),
+    ]);
+  });
+
   it("does not accept \"cannot fit\" before the protected stops alone were tried", async () => {
     const input = problem([
       { ...visit(1, "optional"), stayMinutes: 90 },

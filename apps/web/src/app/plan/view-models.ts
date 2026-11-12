@@ -51,14 +51,24 @@ export type WeatherChip = {
 
 /** V2.11 出游卡片里日常没有的部分（stages/V2.11.md §3.3）。 */
 export type OutingCardView = {
-  readonly dates: { readonly from: string; readonly to: string; readonly label: string; readonly days: number } | null;
+  /** V4.4：guessed 是日期是系统定的（用户没说哪天），卡片上写“暂定”。 */
+  readonly dates: { readonly from: string; readonly to: string; readonly label: string; readonly days: number; readonly guessed?: true } | null;
   readonly startAt: string | null;
   readonly endAt: string | null;
   readonly dailyWindow: { readonly startsAt: string; readonly endsAt: string };
   /** 每一晚（第 1 晚到第“天数 − 1”晚）；没定的是 missing；suggested 是系统按高德结果暂定的（V3.3）。 */
-  readonly lodging: readonly { readonly night: number; readonly place: CardPlace; readonly onBoard?: true; readonly suggested?: true }[];
+  readonly lodging: readonly {
+    readonly night: number;
+    readonly place: CardPlace;
+    readonly onBoard?: true;
+    readonly suggested?: true;
+    /** V3.6：暂定住处“换一个”的候选。 */
+    readonly others?: readonly PlaceChoice[];
+  }[];
   /** V3.3：只说了区域的住宿要求（“春熙路”），暂定住处在那一带找。 */
   readonly lodgingAreas?: readonly string[];
+  /** V4.3：住在哪（“第 2–3 晚 松州”），从用户原话认出来的，可删。 */
+  readonly stays?: readonly { readonly nights: readonly number[]; readonly text: string }[];
   readonly transports: readonly {
     readonly id: string;
     readonly day: number;
@@ -70,7 +80,17 @@ export type OutingCardView = {
     /** 第二天到（夜车、红眼航班）；confirmed 是用户在卡片上确认过。 */
     readonly overnight: boolean;
     readonly confirmed: boolean;
+    /**
+     * V3.6：代码补的（ride 是这一趟是补的；from / to 是这一端的车站是暂定的，列的是“换一个”的候选）。
+     * V4.3：day 是日子按住宿挪的。
+     */
+    readonly suggested?: { readonly ride?: true; readonly day?: true; readonly from?: readonly PlaceChoice[]; readonly to?: readonly PlaceChoice[] };
   }[];
+  /**
+   * V3.6：多城出游中间没有交通的段（“海澄到松州怎么去？”）；V4.3：给了时刻的车和住宿对不上（“第 3 天的车和第 3 晚住
+   * 松州对不上”）。只提示，不挡住开始规划。
+   */
+  readonly rideHints?: readonly string[];
   /** 分到各天（§3.6）：每天去哪、为什么；problems 是代码检查发现的问题（移动之后可能有）。 */
   readonly allocation?: {
     readonly days: readonly {
@@ -92,6 +112,8 @@ export type RequirementsCardView = {
   readonly city: string;
   readonly date: string | null;
   readonly dateLabel: string | null;
+  /** V4.4：日期是系统定的（用户没说哪天），卡片上写“暂定”。 */
+  readonly dateGuessed?: true;
   readonly window: { readonly startsAt: string; readonly endsAt: string } | null;
   readonly start: CardPlace;
   readonly end: CardPlace;
@@ -213,11 +235,19 @@ export type OutingReviewView = {
   readonly kind: "outing_review";
   /** 这次生成最新的那张才能操作。 */
   readonly open: boolean;
+  /** V4.7：“这趟符合你的要求吗”。 */
+  readonly assessment?: {
+    readonly summary: string;
+    readonly items: readonly { readonly text: string; readonly status: "met" | "partly" | "unmet" | "unknown"; readonly note: string }[];
+    readonly issues: readonly { readonly day: number; readonly severity: "minor" | "major"; readonly note: string }[];
+  };
   readonly suggestions: readonly {
     readonly index: number;
     readonly text: string;
     readonly reason: string;
     readonly status: "pending" | "adopted" | "dismissed";
+    /** V4.0：试排的结果（“已试排：第 3 天……”）。 */
+    readonly tried?: string;
     /** V3.3 换住处：那家住处（只有名称和城市），页面给高德和点评平台的链接看评价。 */
     readonly place?: { readonly name: string; readonly city?: string };
   }[];

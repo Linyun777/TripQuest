@@ -200,6 +200,47 @@ function PreferenceProposal({
   );
 }
 
+const ASSESSMENT_MARK = {
+  met: { mark: "✓", word: "做到了", tone: "text-lake-700" },
+  partly: { mark: "△", word: "部分做到", tone: "text-amber-700" },
+  unmet: { mark: "✕", word: "没做到", tone: "text-red-700" },
+  unknown: { mark: "?", word: "看不出来", tone: "text-ink-faint" },
+} as const;
+
+/** V4.7：“这趟符合你的要求吗”：一句总评、逐条清单和整体问题（不显示分数）。 */
+function TripAssessment({ assessment }: { assessment: NonNullable<Extract<ChatMessageView, { kind: "outing_review" }>["assessment"]> }) {
+  return (
+    <div className="mb-2 max-w-md rounded-(--radius-field) border border-line bg-surface px-3.5 py-3">
+      <p className="flex items-center gap-1.5 text-xs text-ink-faint">
+        <ListChecks className="size-3.5" />
+        这趟符合你的要求吗
+      </p>
+      <p className="mt-1.5 text-[15px] text-ink">{assessment.summary}</p>
+      {assessment.items.length > 0 && (
+        <ul className="mt-2 space-y-1.5">
+          {assessment.items.map((item, index) => (
+            <li key={index} className="flex gap-2 text-[13px] leading-5">
+              <span aria-hidden className={cn("w-3.5 shrink-0 text-center font-medium", ASSESSMENT_MARK[item.status].tone)}>{ASSESSMENT_MARK[item.status].mark}</span>
+              <span className="min-w-0 text-ink-soft">
+                <span className="text-ink">{item.text}</span>
+                <span className={cn("ml-1.5", ASSESSMENT_MARK[item.status].tone)}>{ASSESSMENT_MARK[item.status].word}</span>
+                {item.note && <span className="block text-xs text-ink-faint">{item.note}</span>}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {assessment.issues.length > 0 && (
+        <ul className="mt-2 space-y-1 border-t border-line pt-2">
+          {assessment.issues.map((issue, index) => (
+            <li key={index} className="text-[13px] leading-5 text-ink-soft">第 {issue.day} 天：{issue.note}</li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 /** V3.2：审查给的建议。每条一句话和理由；采纳后重排受影响的天、显示前后，确认才保存。 */
 function ReviewSuggestions({
   message,
@@ -218,6 +259,8 @@ function ReviewSuggestions({
   }
   return (
     <Assistant>
+      {message.assessment && <TripAssessment assessment={message.assessment} />}
+      {message.suggestions.length > 0 && (
       <div className="max-w-md rounded-(--radius-field) border border-line bg-surface px-3.5 py-3">
         <p className="flex items-center gap-1.5 text-xs text-ink-faint">
           <ListChecks className="size-3.5" />
@@ -229,6 +272,7 @@ function ReviewSuggestions({
             <li key={item.index} className="py-2 first:pt-0 last:pb-0">
               <p className="text-[15px] text-ink">{item.text}</p>
               <p className="mt-0.5 text-xs text-ink-soft">{item.reason}</p>
+              {item.tried && <p className="mt-0.5 text-xs text-lake-600">{item.tried}</p>}
               {item.place && (
                 <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
                   <a
@@ -262,6 +306,7 @@ function ReviewSuggestions({
         </ul>
         {error && <p className="mt-1.5 text-xs text-sun-700">{error}</p>}
       </div>
+      )}
     </Assistant>
   );
 }

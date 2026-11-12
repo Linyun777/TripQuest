@@ -81,10 +81,9 @@ describe("V3.4 chat split into specialist agents", () => {
     expect(ids(pickAgents(flags("planning", "chitchat"), false))).toEqual(["chat-intake"]);
     expect(ids(pickAgents(flags("chitchat"), false))).toEqual(["chat-companion"]);
     expect(ids(pickAgents(flags(), false))).toEqual(["chat-intake"]);
-    // 提问只来自安全网（像问句、没认出是哪种）：分不清是计划还是提问，交给带提问规则的需求理解一个；有行程时改行程先。
-    expect(pickAgents(flags("ask_timely", "ask_knowledge"), false, { guessed: true })).toEqual([{ agent: "chat-intake", reason: "guessed_question" }]);
-    expect(ids(pickAgents(flags("ask_timely", "ask_knowledge"), true, { guessed: true }))).toEqual(["chat-trip", "chat-info"]);
+    // V4.1：问句安全网的消息不再特殊处理（级联里交给模型判断），按判断出的意图一般地挑。
     expect(ids(pickAgents(flags("ask_timely", "ask_knowledge"), false))).toEqual(["chat-info"]);
+    expect(ids(pickAgents(flags("planning"), false))).toEqual(["chat-intake"]);
     // 资料查询排在后面时只在像问句时才加。
     expect(ids(pickAgents(flags("adjust", "ask_timely"), true, { asks: false }))).toEqual(["chat-trip"]);
     expect(ids(pickAgents(flags("ask_timely"), false, { asks: false }))).toEqual(["chat-info"]);

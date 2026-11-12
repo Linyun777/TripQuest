@@ -24,6 +24,18 @@ export function agentRows(): readonly AgentRow[] {
   return rows;
 }
 
+/** V4.0：审查-修复 Agent 每一步做了什么（动作、检查结果、试排前后的数字），查它为什么这样做用。 */
+export interface RepairTrace {
+  readonly suite: string;
+  readonly caseId: string;
+  readonly steps: readonly { readonly kind: string; readonly name: string; readonly summary: Readonly<Record<string, unknown>> }[];
+}
+const traces: RepairTrace[] = [];
+
+export function repairTraces(): readonly RepairTrace[] {
+  return traces;
+}
+
 export async function evalCase<T>(suite: string, caseId: string, operation: () => Promise<T>): Promise<T> {
   const sink = new MemoryRunSink();
   const root = AgentRun.root({ trigger: "eval", sink, attributes: { suite, caseId } });
@@ -51,6 +63,14 @@ export async function evalCase<T>(suite: string, caseId: string, operation: () =
       item.model += 1;
       item.input += Number(step.summary.inputTokens ?? 0);
       item.output += Number(step.summary.outputTokens ?? 0);
+    }
+    const repairRuns = new Set(sink.runs.filter((run) => run.agent === "outing-repair").map((run) => run.id));
+    if (repairRuns.size) {
+      traces.push({
+        suite,
+        caseId,
+        steps: sink.steps.filter((step) => repairRuns.has(step.runId)).map((step) => ({ kind: step.kind, name: step.name, summary: step.summary })),
+      });
     }
     for (const [agent, item] of byAgent) {
       rows.push({

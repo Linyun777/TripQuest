@@ -39,11 +39,12 @@ import {
   type ChatTurnResult,
 } from "./chat-contracts";
 import { serializeChatContext } from "./chat-prompt";
-import { agentFlags, CHAT_AGENTS, CHAT_INTAKE_WITH_QUESTIONS, onlySmallTalk as onlyChatting, pickAgents, type ChatAgentId, type ChatAgentSpec } from "./chat-agents";
+import { agentFlags, CHAT_AGENTS, onlySmallTalk as onlyChatting, pickAgents, type ChatAgentId, type ChatAgentSpec } from "./chat-agents";
 import type { ChatSpecialistId } from "./chat-agent-prompts";
 import { DecisionModelError } from "./contracts";
-import { guessedQuestion, INTENT_FLAGS, looksLikeQuestion, regexFallback, regexRouter, type IntentRoute, type IntentRouter } from "./intent";
+import { INTENT_FLAGS, looksLikeQuestion, regexFallback, regexRouter, type IntentRoute, type IntentRouter } from "./intent";
 import { hasPrivateNumber, preferenceProblem } from "@tripquest/application/preferences";
+import { dateWords, datesChangedHint, datesToRestore, expectedDates, nightOutsideHint, nightsHint, nightsToFix, settleDates, withoutNightsOutside } from "@tripquest/application/said-dates";
 import { assertLocalTracingOnly } from "./tracing";
 import { inAgent } from "./agents/run-agent";
 import { currentRun, type AgentRun } from "./runs";
@@ -691,6 +692,11 @@ async function runTurn(
   let nearbyChecked = false;
   let startChecked = false;
   let removalChecked = false;
+  /** V4.4：卡片上的日期这一轮应该是什么（用户这句话说了就按这句，没说按之前用户给的）；改了日期只打回一次。 */
+  const datesExpected = expectedDates(input.draft.saidDates, dateWords(input.userText, chinaNow(input.nowMs).date));
+  let datesChecked = false;
+  /** V4.5：到这一轮为止用户说的话（按晚数查结束日期时读“住几晚”，同每轮之后的补卡片）。 */
+  const userTexts = [...input.history.filter((message) => message.role === "user").map((message) => message.text), input.userText];
   /** V2.9：用户点“记住”之前什么都没保存；回复说“记住了”先提醒一次。 */
   let memoryChecks = 0;
   // 批次不是数据库事务：前面已经执行的工具或补丁不会因后面的错误回滚。
@@ -728,6 +734,9 @@ async function runTurn(
           return `short_is_today: mode "short" is for today (${today}) only; for ${result.draft.date} make a day plan (mode "day")`;
         }
         if (result.status === "ok") return null;
+        // V4.6：住处越过行程那晚，写明几晚、哪晚越界、怎么办。
+        const night = result.code === "night_outside_dates" ? nightOutsideHint(draft, next.patch) : null;
+        if (night) return night;
         if (OUTING_HINTS[result.code]) return `${result.code}: ${OUTING_HINTS[result.code]}`;
         if (result.code !== "unknown_choice") return result.code;
         // 错误反馈列出正在等待选择的字段和有效序号，给模型可执行的修正范围（V2.11：含出游的住处 n1 和交通的起止站 t1:from）。
@@ -1316,9 +1325,12 @@ async function runTurn(
         const unnoted = resent.action === "update_requirements" ? withoutPrivateNotes(resent) : resent;
         const inCity = unnoted.action === "update_requirements" ? withoutOutsideInterests(unnoted, outside) : unnoted;
         // V2.11：过夜交通只有用户能在卡片上确认，模型发的确认不写。
-        const next = inCity.action === "update_requirements" ? withoutConfirmations(inCity) : inCity;
+        const confirmed = inCity.action === "update_requirements" ? withoutConfirmations(inCity) : inCity;
+        // V4.6：住处越过用户给的日期那几晚不写，其余照写，回复里问延长还是少住。
+        const cut = confirmed.action === "update_requirements" ? withoutNightsOutside(draft, confirmed.patch) : null;
+        const next = cut && confirmed.action === "update_requirements" ? { ...confirmed, patch: cut.patch } : confirmed;
         // V2.10：备注里的号码没保存，要让模型先看到这一点；同批写好的“记下了”不能直接发出。
-        // V2.11：外地的兴趣、模型替用户的确认同样不写，同批的回复等模型看到后再说。
+        // V2.11：外地的兴趣、模型替用户的确认同样不写，同批的回复等模型看到后再说。V4.6：越过日期那几晚的住处同样。
         if (next !== resent) {
           observations.push({
             tool: "update_requirements",
@@ -1327,7 +1339,9 @@ async function runTurn(
               ? "private_notes: phone, ID numbers, emails and coordinates are never kept on the card; the notes were not saved"
               : inCity !== unnoted
                 ? "outside_interest: interests about the other city are not kept; daily plans only this city"
-                : "confirm_is_users: only the user confirms an overnight ride, on the card",
+                : confirmed !== inCity
+                  ? "confirm_is_users: only the user confirms an overnight ride, on the card"
+                  : cut?.refused,
           });
           lookedUp = true;
           if (!Object.keys(next.action === "update_requirements" ? next.patch : {}).length) continue;
@@ -1414,6 +1428,19 @@ async function runTurn(
           if (claimed || !/出游/.test(next.text)) {
             outsideChecked = true;
             repair(`${claimed ? "claimed_other_city" : "other_city_unexplained"}: ${named} is not on the card (daily plans only ${draftCity(draft).name}); say so and point to 出游 (the button on the page)`, index);
+            break;
+          }
+        }
+        // V4.4：用户给的日期不悄悄改（stages/V4.4.md §3.1，同下面 removed_silently 的做法）：这一轮模型改了卡片上的日期、
+        // 又和用户给的对不上时打回一次；仍改的由一轮结束时的 settleDates 改回并说明。
+        // V4.5（stages/V4.5.md §3.1）：用户没给回来那天时再按说的晚数查结束日期，共用这一次打回（先查用户给的日期）；
+        // 仍不改的由每轮之后的补卡片改并说明（V4.4 的兜底）。
+        if (next.action === "reply" && !datesChecked && can("update_requirements") && repairsUsed() + 1 < limits.repairs) {
+          const target = datesToRestore(input.draft, draft, datesExpected);
+          const nights = target ? null : nightsToFix(input.draft, draft, userTexts, datesExpected);
+          if (target || nights) {
+            datesChecked = true;
+            repair(target ? datesChangedHint(target, draft.mode === "outing") : nightsHint(nights!), index);
             break;
           }
         }
@@ -1614,11 +1641,12 @@ async function runSplit(
   const deadline = Date.now() + limits.turnMs;
   const counts: ChatCounts = { model: 0, searches: 0, weather: 0, webSearches: 0, knowledge: 0, repairs: 0 };
   const route = await routeOnce(input, options, dependencies, options.signal);
-  const picked = pickAgents(route.flags, !!input.trip, { guessed: guessedQuestion(input.userText), asks: looksLikeQuestion(input.userText) });
+  const picked = pickAgents(route.flags, !!input.trip, { asks: looksLikeQuestion(input.userText) });
   const parent = currentRun();
   if (parent) {
-    const { router, flags, fallback, failure } = { ...route, flags: INTENT_FLAGS.filter((flag) => route.flags[flag]) };
-    parent.step("check", "route", { router, flags, fallback, ...(failure ? { failure } : {}) }, route.latencyMs, parent.startedAt);
+    const { router, flags, fallback, failure, unsure } = { ...route, flags: INTENT_FLAGS.filter((flag) => route.flags[flag]) };
+    // V4.1：级联时记下正则拿不准的原因（哪条规则）和最后用的是谁（router）。
+    parent.step("check", "route", { router, flags, fallback, ...(failure ? { failure } : {}), ...(unsure ? { unsure } : {}) }, route.latencyMs, parent.startedAt);
     parent.step("check", "pick", { agents: picked.map((item) => item.agent), reasons: picked.map((item) => item.reason) });
   }
 
@@ -1645,7 +1673,7 @@ async function runSplit(
       ran,
       handoffUsed,
     };
-    const spec = reason === "guessed_question" && id === "chat-intake" ? CHAT_INTAKE_WITH_QUESTIONS : CHAT_AGENTS[id];
+    const spec = CHAT_AGENTS[id];
     const draft = done.at(-1)?.draft ?? input.draft;
     const result = turn.modelLeft <= 0
       ? null
@@ -1708,7 +1736,11 @@ async function runSplit(
     };
   }
   const last = done.at(-1)!;
-  const text = [...done.map((item) => item.reply.text), ...(partFailed ? ["另一部分没能处理好，请再说一次。"] : [])].reduce(joinReplies);
+  // V4.4：模型仍改了用户给的日期就改回；记下用户给的日期，没给日期时标暂定（stages/V4.4.md §3.1、§3.4）。说明加在回复后面。
+  const dates = settleDates(input.draft, last.draft, dateWords(input.userText, chinaNow(input.nowMs).date));
+  if (dates.note) parent?.step("check", "dates", { note: dates.note });
+  const replies = [...done.map((item) => item.reply.text), ...(partFailed ? ["另一部分没能处理好，请再说一次。"] : [])].reduce(joinReplies);
+  const text = dates.note ? `${replies}\n\n${dates.note}` : replies;
   const sources = done.flatMap((item) => item.reply.sources ?? []);
   const places = done.flatMap((item) => item.reply.places ?? []);
   const outside = done.flatMap((item) => item.outside ?? []).filter((item, index, list) => list.findIndex((other) => other.name === item.name) === index).slice(0, 6);
@@ -1726,8 +1758,8 @@ async function runSplit(
       ...(sources.length ? { sources } : {}),
       ...(places.length ? { places } : {}),
     },
-    draft: last.draft,
-    draftChanged: done.some((item) => item.draftChanged),
+    draft: dates.draft,
+    draftChanged: done.some((item) => item.draftChanged) || dates.draft !== last.draft,
     ...(adjust ? { adjust } : {}),
     ...(outingChange ? { outingChange } : {}),
     ...(outingRefused ? { outingRefused } : {}),

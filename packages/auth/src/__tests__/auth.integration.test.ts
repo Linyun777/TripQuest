@@ -124,6 +124,10 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)("V2.12 sign-up with an invite, s
 
     await client.pool.query("DELETE FROM rate_limits");
     await client.pool.query("UPDATE users SET banned = true WHERE username = 'test_hal'");
-    expect((await signIn("test_hal")).status).toBe(403);
+    const banned = await http("/sign-in/username", { body: { username: "test_hal", password: "correct-horse-1" } });
+    expect(banned.status).toBe(403);
+    // 登录页按 code 分辨 403：只有 BANNED_USER 才说“账号已停用”。另一种 403 是访问地址和配置的地址对不上
+    // （INVALID_ORIGIN，带着 cookie 时库会查来源）；库在测试环境里不查来源，这里测不到。
+    expect(((await banned.json()) as { code?: string }).code).toBe("BANNED_USER");
   });
 });

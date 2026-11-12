@@ -1,3 +1,4 @@
+import type { JudgeRequest, StopTyper } from "./outing-judge";
 import type { DayDraftConfirmationSnapshot } from "@tripquest/application/day-confirmation";
 import type { DayPlanningRunner, DayProgress, DayWeather } from "@tripquest/application/day-planning";
 import type { Allocation, DayFrame, OutingPlanInput } from "@tripquest/application/outing-allocation";
@@ -6,7 +7,7 @@ import type { MobilityProvider, WeatherProvider } from "@tripquest/providers";
 import { generateWithGraph, type OutingReviewOutcome } from "./outing-graph";
 import type { LodgingChoice } from "./outing-lodging";
 import type { ReviewRequest } from "./outing-review";
-import type { RunBudget } from "./runs";
+import { currentRun, type RunBudget } from "./runs";
 import { planTransferDay, type TransferDayResult } from "./transfer-day";
 
 /**
@@ -29,7 +30,25 @@ export interface GeneratedDay {
   readonly reviewNote?: string;
 }
 
-export type OutingInput = OutingPlanInput & { readonly pace: "relaxed" | "standard"; readonly cityAdcode: string; readonly notes?: string };
+export type OutingInput = OutingPlanInput & {
+  readonly pace: "relaxed" | "standard";
+  readonly cityAdcode: string;
+  readonly notes?: string;
+  /** V4.7：用户保存的长期偏好（最多 10 条），进逐天规划的备注和判断。 */
+  readonly preferences?: readonly string[];
+  /** V4.7：这段对话最近的用户消息，只送判断模型，不存、不记进运行记录。 */
+  readonly said?: readonly string[];
+};
+
+/** 备注加长期偏好的合计上限（一日规划提示词已经把备注当软需求，stages/V4.7.md §3.1）。 */
+const PLANNING_NOTES_CHARS = 400;
+
+/** V4.7：逐天规划看到的备注：卡片备注，后面跟长期偏好；超长时截断偏好。 */
+export function planningNotes(input: Pick<OutingInput, "notes" | "preferences">): string | undefined {
+  const saved = (input.preferences ?? []).slice(0, 10).join("；");
+  const joined = [input.notes, saved && `长期偏好：${saved}`].filter(Boolean).join("。");
+  return joined ? joined.slice(0, PLANNING_NOTES_CHARS) : undefined;
+}
 
 export interface OutingDependencies {
   readonly runner: DayPlanningRunner;
@@ -40,6 +59,10 @@ export interface OutingDependencies {
   readonly weather?: (date: string, city: string) => Promise<DayWeather | undefined>;
   /** V3.2 审查 Agent 的模型请求；没有或 OUTING_REVIEW=off 时不审查。 */
   readonly reviewer?: ReviewRequest;
+  /** V4.7 整体判断的模型请求：OUTING_REVIEW=agent 时用；没有就只按代码找的问题修。 */
+  readonly judge?: JudgeRequest;
+  /** 评测世界的地点没有高德分类码，由评测给类型；产品按分类码和名字算。 */
+  readonly stopType?: StopTyper;
 }
 
 export interface OutingGenerateOptions {
@@ -103,9 +126,27 @@ function dayInput(input: OutingInput, allocation: Allocation, frame: DayFrame, e
       : input.travel,
     pace: input.pace,
     cityAdcode: frame.start.place.cityAdcode ?? input.cityAdcode,
-    ...(input.notes ? { notes: input.notes } : {}),
+    ...(planningNotes(input) ? { notes: planningNotes(input)! } : {}),
     ...(exclude.length ? { exclude: [...exclude] } : {}),
   };
+}
+
+const PREFERENCES_SET_ASIDE = "按你保存的长期偏好这天排不出，这一天先没考虑偏好。";
+/** 和偏好无关的排不出：赶不上车、地点放不下、卡片不全。 */
+const NOT_ABOUT_PREFERENCES = new Set(["late", "unplaced", "requirements"]);
+/** 模型自己放弃或反复不合格的失败；供应商出错、取消、超时和偏好无关。 */
+const MODEL_GAVE_UP = new Set(["semantic_invalid", "budget_exhausted"]);
+
+/** 排不开的段数：只有兴趣的一段排不开时这天仍是 draft，那段只是直接去下一站（transfer-day.ts）。没排出这一天算最多。 */
+function blockedSegments(result: TransferDayResult): number {
+  if (result.status !== "draft") return Infinity;
+  return result.parts.filter((part) => part.kind === "connect" && result.split.segments[part.segment]?.interests.length).length;
+}
+
+function preferencesMayBlock(result: TransferDayResult): boolean {
+  if (result.status === "no_plan") return !NOT_ABOUT_PREFERENCES.has(result.reason);
+  if (result.status === "failed") return MODEL_GAVE_UP.has(result.code);
+  return blockedSegments(result) > 0;
 }
 
 /** 排一天（总控图的 plan_day 节点）：查这一天各城市的预报，交给 planTransferDay，记下新找到的地点。 */
@@ -115,22 +156,36 @@ export async function planOutingDay(
   frame: DayFrame,
   exclude: readonly string[],
   dependencies: OutingDependencies,
-  options: Pick<OutingGenerateOptions, "signal" | "onProgress">,
+  options: Pick<OutingGenerateOptions, "signal" | "onProgress"> & { readonly retryWithoutPreferences?: boolean },
 ): Promise<GeneratedDay> {
   const weatherByCity: Record<string, DayWeather> = {};
   for (const city of frame.cities) {
     const day = await dependencies.weather?.(frame.date, city).catch(() => undefined);
     if (day) weatherByCity[city] = day;
   }
-  const snapshots = new Map<number, DayDraftConfirmationSnapshot>();
-  const result = await planTransferDay({
-    ...dayInput(input, allocation, frame, exclude),
-    ...(Object.keys(weatherByCity).length ? { weatherByCity } : {}),
-  }, dependencies, {
-    signal: options.signal,
-    onProgress: (_segment, progress) => options.onProgress?.(frame.day, progress),
-    onDraftReady: (segment, snapshot) => snapshots.set(segment, snapshot),
-  });
+  const attempt = async (planned: OutingInput) => {
+    const snapshots = new Map<number, DayDraftConfirmationSnapshot>();
+    const result = await planTransferDay({
+      ...dayInput(planned, allocation, frame, exclude),
+      ...(Object.keys(weatherByCity).length ? { weatherByCity } : {}),
+    }, dependencies, {
+      signal: options.signal,
+      onProgress: (_segment, progress) => options.onProgress?.(frame.day, progress),
+      onDraftReady: (segment, snapshot) => snapshots.set(segment, snapshot),
+    });
+    return { result, snapshots };
+  };
+  let { result, snapshots } = await attempt(input);
+  // V4.7：长期偏好是软需求，带着它这天排不出时去掉再排一次（“不喜欢爬山”对卡片上的崂山，前两天都排不出）。
+  let setAside = false;
+  if (options.retryWithoutPreferences && input.preferences?.length && preferencesMayBlock(result)) {
+    const again = await attempt({ ...input, preferences: [] });
+    if (blockedSegments(again.result) < blockedSegments(result)) {
+      ({ result, snapshots } = again);
+      setAside = true;
+      currentRun()?.step("check", "outing:preferences_set_aside", { day: frame.day });
+    }
+  }
   const discovered = result.status !== "draft" ? [] : result.parts.flatMap((part) => {
     if (part.kind !== "plan") return [];
     const snapshot = snapshots.get(part.segment);
@@ -139,8 +194,9 @@ export async function planOutingDay(
       return place ? [place.selection.place.ref.externalId] : [];
     });
   });
-  // V3.3：这一晚住处没定、也没找到时，方案上照实说终点按哪里估计。
-  const noted = frame.unsettled && result.status === "draft" ? { ...result, notes: [frame.unsettled, ...result.notes] } : result;
+  // V3.3：这一晚住处没定、也没找到时，方案上照实说终点按哪里估计；V4.2：为赶上早上的固定事项提前出门也写上。
+  const told = [frame.early, frame.unsettled, setAside ? PREFERENCES_SET_ASIDE : null].filter((note): note is string => !!note);
+  const noted = told.length && result.status === "draft" ? { ...result, notes: [...told, ...result.notes] } : result;
   return {
     day: frame.day, date: frame.date, frame, result: noted, snapshots, discovered,
     ...(Object.keys(weatherByCity).length ? { weather: weatherByCity } : {}),
@@ -152,8 +208,9 @@ export async function planOutingDay(
  * 路线的段给地图 6；再加分配的模型 3，和排之前按编号补查地点、查预报的地图 20。
  */
 export function outingSegmentBudget(input: OutingInput, allocation: Allocation, frames: readonly DayFrame[]): RunBudget {
-  let model = 3;
-  let amap = 20;
+  // V4.7：带长期偏好时留一天的余量，给去掉偏好再排的那一次。
+  let model = input.preferences?.length ? 15 : 3;
+  let amap = input.preferences?.length ? 100 : 20;
   for (const frame of frames) {
     for (const segment of splitDay(dayInput(input, allocation, frame, [])).segments) {
       if (segment.visits.length || segment.interests.length) {
