@@ -47,7 +47,7 @@ import { hasPrivateNumber, preferenceProblem } from "@tripquest/application/pref
 import { dateWords, datesChangedHint, datesToRestore, expectedDates, nightOutsideHint, nightsHint, nightsToFix, settleDates, withoutNightsOutside } from "@tripquest/application/said-dates";
 import { assertLocalTracingOnly } from "./tracing";
 import { inAgent } from "./agents/run-agent";
-import { currentRun, type AgentRun } from "./runs";
+import { currentRun, withRepair, type AgentRun } from "./runs";
 
 const usageSchema = z.strictObject({
   inputTokens: z.number().int().nonnegative(),
@@ -130,7 +130,6 @@ const classifyTurn = (result: ChatTurnResult) => result.status === "completed"
 function recordTrace(run: AgentRun, result: AgentTurnResult) {
   const trace = result.trace!;
   run.set({ prompt: trace.prompt, context: trace.context });
-  for (const hint of trace.hints) run.step("repair", "hint", { hint });
   for (const { tool, ...summary } of trace.tools) run.step("tool_call", tool, summary);
   if (result.status === "completed" && result.reply.fallback) run.step("fallback", "reply", {});
 }
@@ -364,6 +363,7 @@ const OUTING_HINTS: Partial<Record<string, string>> = {
   day_outside_dates: "a day number (or date) is outside the dates",
   transport_day_missing: "a transport needs \"date\" (YYYY-MM-DD, the day it runs) or \"day\"",
   night_outside_dates: "night n is the night after day n; the last day has no night",
+  manual_boundary: "The traveller edited this boundary or ticket on the card. Keep it; ask them to edit it on the card if needed.",
   night_on_board: "that night is on an overnight train or flight; no lodging for it",
   fixed_needs_day: "a fixed visit on an outing needs its day",
   transport_time_order: "arriveAt is not after departAt; if it arrives the next day send arriveDay \"next\"",
@@ -1246,7 +1246,11 @@ async function runTurn(
       counts.model += 1;
       let raw: unknown;
       try {
-        raw = await bounded(controller.signal, limits.modelMs, (signal) => dependencies.model.decide(current, { signal, system: agent.prompt(current) }));
+        raw = await bounded(controller.signal, limits.modelMs, (signal) =>
+          withRepair("decision", current.feedback?.code, () =>
+            dependencies.model.decide(current, { signal, system: agent.prompt(current) }),
+          ),
+        );
       } catch (error) {
         if (error instanceof DecisionModelError) {
           const reported = usageSchema.safeParse(error.metadata?.usage ?? null);
@@ -1679,7 +1683,7 @@ async function runSplit(
       ? null
       : await inAgent(
           id,
-          { attributes: { reason } },
+          { attributes: { reason, modelMode: dependencies.model.mode } },
           async (run) => {
             const outcome = await runTurn({ ...input, draft }, options, dependencies, limits, spec, turn);
             if (run) recordTrace(run, outcome);
@@ -1894,7 +1898,7 @@ function dayGaps(draft: RequirementsDraft, today: string): string[] {
   const gaps: string[] = [];
   if (!draft.date) gaps.push(`date is empty: with no other day named ("晚上", "今晚") it is today ${today}`);
   const fromHere = draft.start?.status === "current" || (draft.start?.status === "bound" && !!draft.start.nearby);
-  if (fromHere && !draft.end) {
+  if (fromHere && !draft.end && !draft.endPolicy) {
     gaps.push(`end is empty: with no end named, the day ends where it starts, end {"current":true}`);
   }
   return gaps;

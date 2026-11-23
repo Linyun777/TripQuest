@@ -1,4 +1,5 @@
 import { confirmJourneyAdjustment, type ConfirmedAdjustmentDraft } from "@tripquest/application";
+import { readMigrationFiles } from "drizzle-orm/migrator";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { config } from "dotenv";
 import { copyFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
@@ -174,7 +175,7 @@ describe("S3.4 confirmation persistence", () => {
       const applied = await v1.pool.query<{ count: string }>(
         "SELECT count(*)::text AS count FROM drizzle.__drizzle_migrations",
       );
-      expect(applied.rows[0]?.count, "eighteen migrations are recorded once").toBe("18");
+      expect(Number(applied.rows[0]?.count)).toBe(readMigrationFiles({ migrationsFolder: DRIZZLE_DIR }).length);
     } finally {
       await v1.close();
       await admin.pool.query(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`);

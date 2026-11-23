@@ -4,7 +4,7 @@
 
 用户说出需求 → 分流与专门 Agent 整理需求卡 → 用户确认需求 → 搜索地点与路线 → 确定性排程和校验 → 候选方案 → 用户确认 → 事务写入新版本。
 
-日常模式支持一日与逐站短途；出游模式支持 1–7 天、固定交通、住处、多城和跨天调整。出游总控用一张 LangGraph StateGraph 承接分配、生成和修改，复用一日规划能力。用户说出的日期、住宿晚数和每晚城市由确定性代码核对；未指定的交通和车站可以补为可修改的暂定项。
+日常模式支持一日与逐站短途；出游模式支持 1–7 天、固定与跨夜交通、住处、多城和跨天调整。规划卡片支持地图选点起终点、逐日时段覆盖、默认最后一站结束以及票面发到时间录入，车次与进站余量参与确定性校验。出游总控用一张 LangGraph StateGraph 承接分配、生成和修改，复用一日规划能力。用户说出的日期、住宿晚数和每晚城市由确定性代码核对；未指定的交通和车站可以补为可修改的暂定项。免登录 `/demo` 在浏览器内复用同一套排程与独立校验逻辑。
 
 ## 分流与出游审查
 
@@ -20,8 +20,8 @@
 - **确认绑定基础状态。** 候选指纹、版本、权限和幂等性在服务端复核；过期候选不能覆盖较新的行程，Agent 无权直接写正式安排。
 - **分开保存不同状态。** 业务计划、实际进度、对话、长任务、图检查点及运行记录各有职责，避免用聊天记录代替业务状态。
 - **同仓库 Web 与 Worker。** PostgreSQL 同时承担业务存储、任务租约、LangGraph 检查点和 pgvector 检索，不额外引入消息队列或向量服务。
-- **真实数据临时查询。** 高德个人模式只在本机开发启用；持久化保留地点标识、名称和自有内容，展示信息实时查。fixture 与 live 来源分开，测试使用合成数据。
-- **认证复用成熟实现。** Better Auth 管理凭证与会话，应用补充邀请码、用量和按用户隔离的仓库。
+- **真实数据临时查询与生产边界。** 开发默认 `TRIPQUEST_DEPLOYMENT_MODE=local`，受邀部署需显式配置 `invited` 与有限的 `MODEL_DAILY_LIMIT`；持久化保留地点标识、名称和自有内容，展示信息实时查。fixture 与 live 来源分开，测试使用合成数据。
+- **认证、额度与站长观测。** Better Auth 管理凭证与会话，应用补充邀请码、按用户隔离的仓库、基于 advisory lock 的个人/全站并发额度账本，以及 `/ops` 按根运行汇总的费用、工具耗时与用户反馈视图。
 - **长任务按执行方式恢复。** 演示任务由 Worker 与图检查点恢复；真实对话长任务在 Web 服务登记，刷新可重新接上，服务重启中断后由用户继续，不承诺外部请求恰好执行一次。
 
 ## 按链路阅读源码
@@ -40,6 +40,9 @@
 | 长任务与运行记录 | `apps/web/src/app/plan/jobs.ts`、`packages/db/src/job-repository.ts`、`packages/agent/src/runs.ts` |
 | Worker 与检查点 | `apps/worker/src/worker.ts`、`loop.ts`、`execute.ts`、`checkpointer.ts` |
 | 检索与回答 | `packages/rag/src/ingest.ts`、`retrieve.ts`、`chat.ts` |
+| 每日起终点与地图选点 | `apps/web/src/app/plan/boundary-picker.tsx`、`boundary-controls.tsx`、`packages/application/src/transfer-day.ts` |
+| 免登录演示与站长观测 | `apps/web/src/app/demo/demo-schedule.ts`、`apps/web/src/app/ops/view.tsx`、`packages/db/src/ops.ts`、`model-prices.ts` |
+| 生产配置与运维发布 | `apps/web/src/app/deployment/config.ts`、`health.ts`、`deploy/README.md`、`scripts/deploy.mjs` |
 
 ## 如何理解测试
 

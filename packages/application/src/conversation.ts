@@ -8,6 +8,8 @@ import {
   interestCountSchema,
   interestSlotSchema,
   planningTimeSchema,
+  dayDeadlineSchema,
+  endPolicySchema,
   slotOverlapMinutes,
   travelPreferenceSchema,
   type InterestSlot,
@@ -92,6 +94,7 @@ export type DraftCity = z.infer<typeof draftCitySchema>;
 export const DEFAULT_CITY: DraftCity = { adcode: "330100", name: "杭州市" };
 
 const dayNumber = z.number().int().min(1).max(DRAFT_LIMITS.outingDays);
+const boundaryKey = z.enum(["start", "end", "endPolicy", "startsAt", "endsAt", "dailyWindow", "startAt", "endAt"]);
 const transportId = z.string().regex(/^t\d{1,2}$/);
 
 /**
@@ -108,6 +111,7 @@ export const outingTransportSchema = z.strictObject({
   arriveAt: planningTimeSchema.nullable(),
   arriveDay: z.enum(["same", "next"]),
   overnightConfirmed: z.literal(true).optional(),
+  manualTicket: z.literal(true).optional(),
   /**
    * V3.6：代码补的部分（卡片上写“暂定”，stages/V3.6.md §3.2–3.3）。ride 是这一趟是代码补的；from / to 是这一端的车站
    * 是按高德结果暂定的，others 是“换一个”的候选（最多 2 个）。用户改了哪部分，哪部分就是用户的，不再标。
@@ -127,8 +131,13 @@ export const outingDraftSchema = z.strictObject({
   dates: z.strictObject({ from: z.iso.date(), to: z.iso.date() }).nullable(),
   /** 第一天几点出发、最后一天几点前到；不写按每天的时间窗。 */
   startAt: planningTimeSchema.nullable(),
-  endAt: planningTimeSchema.nullable(),
-  dailyWindow: z.strictObject({ startsAt: planningTimeSchema, endsAt: planningTimeSchema }),
+  endAt: dayDeadlineSchema.nullable(),
+  dailyWindow: z.strictObject({ startsAt: planningTimeSchema, endsAt: dayDeadlineSchema }),
+  dayBoundaries: z.record(z.iso.date(), z.strictObject({
+    start: draftPlaceSchema.optional(), end: draftPlaceSchema.optional(),
+    startsAt: planningTimeSchema.optional(), endsAt: dayDeadlineSchema.optional(),
+    endPolicy: endPolicySchema.optional(),
+  })).optional(),
   /**
    * 第 night 晚住哪；place 为空是还没定；onBoard 是这一晚在过夜交通上（不能再填住处）。V3.3：source 是 suggested 时
    * 是系统按高德结果暂定的（卡片上写“暂定”，用户可以换）；不写就是用户给的。V3.6：others 是暂定时没选上的候选
@@ -177,11 +186,13 @@ export const DEFAULT_DAILY_WINDOW = { startsAt: "09:00", endsAt: "20:00" } as co
 
 export const requirementsDraftSchema = z.strictObject({
   version: z.literal("requirements-draft.v1"),
+  manualBoundaries: z.array(boundaryKey).max(8).optional(),
   city: draftCitySchema.optional(),
   date: z.iso.date().nullable(),
   startsAt: planningTimeSchema.nullable(),
-  endsAt: planningTimeSchema.nullable(),
+  endsAt: dayDeadlineSchema.nullable(),
   start: draftPlaceSchema.nullable(),
+  endPolicy: endPolicySchema.optional(),
   end: draftPlaceSchema.nullable(),
   // 日常 8 个地点、5 个兴趣，出游 24 个、12 个；按模式的上限在 draftProblem 里查。
   visits: z.array(draftVisitSchema).max(DRAFT_LIMITS.outingVisits),
@@ -219,6 +230,7 @@ export type RequirementsDraft = z.infer<typeof requirementsDraftSchema>;
 export function emptyDraft(): RequirementsDraft {
   return {
     version: "requirements-draft.v1",
+    endPolicy: "last",
     date: null,
     startsAt: null,
     endsAt: null,
@@ -308,7 +320,8 @@ const interestWhenInputSchema = z.union([interestSlotSchema, z.literal("any")]);
 export const draftPatchSchema = z.strictObject({
   date: z.iso.date().nullable().optional(),
   startsAt: planningTimeSchema.nullable().optional(),
-  endsAt: planningTimeSchema.nullable().optional(),
+  endsAt: dayDeadlineSchema.nullable().optional(),
+  endPolicy: endPolicySchema.optional(),
   start: placeInputSchema.nullable().optional(),
   end: placeInputSchema.nullable().optional(),
   pace: z.enum(["relaxed", "standard"]).optional(),
@@ -319,8 +332,14 @@ export const draftPatchSchema = z.strictObject({
   /** V2.11 出游卡片的字段（只在出游里用）。 */
   dates: z.strictObject({ from: z.iso.date(), to: z.iso.date() }).nullable().optional(),
   startAt: planningTimeSchema.nullable().optional(),
-  endAt: planningTimeSchema.nullable().optional(),
-  dailyWindow: z.strictObject({ startsAt: planningTimeSchema, endsAt: planningTimeSchema }).optional(),
+  endAt: dayDeadlineSchema.nullable().optional(),
+  dailyWindow: z.strictObject({ startsAt: planningTimeSchema, endsAt: dayDeadlineSchema }).optional(),
+  dayBoundary: z.strictObject({
+    date: z.iso.date(), reset: z.literal(true).optional(),
+    start: placeInputSchema.optional(), end: placeInputSchema.optional(),
+    startsAt: planningTimeSchema.optional(), endsAt: dayDeadlineSchema.optional(),
+    endPolicy: endPolicySchema.optional(),
+  }).optional(),
   /** V3.3：去掉只说了区域的住宿要求（按原话）。 */
   removeLodgingAreas: z.array(text(DRAFT_LIMITS.lodgingAreaChars)).max(DRAFT_LIMITS.lodgingAreas).optional(),
   /** V4.3：去掉“住在哪”里包含这几晚的那几行（卡片上删）。 */
@@ -385,6 +404,7 @@ export const draftPatchSchema = z.strictObject({
 export type DraftPatch = z.infer<typeof draftPatchSchema>;
 
 export type PatchError =
+  | "manual_boundary"
   | "unknown_candidate"
   | "unknown_visit"
   | "unknown_interest"
@@ -447,7 +467,7 @@ export function applyDraftPatch(
   patch: DraftPatch,
   candidates: ReadonlyMap<string, { externalId: string; name: string; cityAdcode?: string }> = new Map(),
   /** 注入时钟供短途填充今天与“现在”；测试可固定时间，避免默认值随执行时刻漂移。 */
-  options: { nowMs?: number } = {},
+  options: { nowMs?: number; manualCard?: boolean } = {},
 ): { status: "ok"; draft: RequirementsDraft; changed: boolean } | { status: "invalid"; code: PatchError } {
   // 对话动作与卡片编辑共用这套补丁语义：先在副本上完成整组修改，再验证最终状态。
   // 中途失败会丢弃副本；这保证单个补丁原子应用，不会只改日期却漏掉后面的地点选择。
@@ -496,12 +516,17 @@ export function applyDraftPatch(
     next[field] = place;
   }
 
+  if (patch.end !== undefined && next.endPolicy !== undefined) next.endPolicy = next.end ? "prefer" : "last";
+  if (patch.endPolicy) next.endPolicy = patch.endPolicy;
+  if (patch.endPolicy === "last") next.end = null;
   if (outing) {
-    const problem = applyOutingPatch(next.outing!, patch, resolve);
+    const problem = applyOutingPatch(next.outing!, patch, resolve, options.manualCard === true);
     if (problem) return { status: "invalid", code: problem };
     // 分配跟着卡片：只改备注、节奏、过夜确认或移动时保留，其余改动都要重新分。
     const keeps = Object.keys(patch).every((key) => ["notes", "pace", "confirmOvernight", "moveToDay", "noDriving"].includes(key));
-    if (!keeps) delete next.outing!.allocation;
+    const boundaryEdit = options.manualCard && Object.keys(patch).every((key) =>
+      [...boundaryKey.options, "dayBoundary", "addTransports", "updateTransports", "removeTransports", "confirmOvernight"].some((field) => field === key));
+    if (!keeps && !boundaryEdit) delete next.outing!.allocation;
     // V3.3：“人在哪”变了（日期、加删交通、交通的日期 / 起终点 / 过夜）才作废系统暂定的住处，下次规划按新的行程重新找；
     // 只改车次时间、加地点或兴趣不算。用户给的、采纳过的照留。
     if (whereabouts(next.outing!) !== whereabouts(draft.outing!)) {
@@ -629,6 +654,20 @@ export function applyDraftPatch(
 
   // 先应用所有明确修改，再补短途空值，最后做语义和结构复核；顺序保证默认值不会覆盖用户输入。
   if (next.mode === "short" && options.nowMs !== undefined) fillShortDefaults(next, options.nowMs);
+  const fields = boundaryKey.options;
+  const value = (card: RequirementsDraft, key: typeof fields[number]) =>
+    key === "dailyWindow" || key === "startAt" || key === "endAt" ? card.outing?.[key] : card[key];
+  if (options.manualCard) {
+    const edited = fields.filter((key) => patch[key] !== undefined);
+    if (edited.length) next.manualBoundaries = [...new Set([...(draft.manualBoundaries ?? []), ...edited])];
+  } else {
+    const changed = (a: unknown, b: unknown) => JSON.stringify(a) !== JSON.stringify(b);
+    const overwritten = draft.manualBoundaries?.some((key) => changed(value(draft, key), value(next, key)));
+    const overwrittenDay = changed(draft.outing?.dayBoundaries, next.outing?.dayBoundaries);
+    const overwrittenRide = draft.outing?.transports.some((ride) => ride.manualTicket &&
+      changed(ride, next.outing?.transports.find((item) => item.id === ride.id)));
+    if (overwritten || overwrittenDay || overwrittenRide) return { status: "invalid", code: "manual_boundary" };
+  }
   const problem = draftProblem(next);
   if (problem) return { status: "invalid", code: problem };
   const parsed = requirementsDraftSchema.parse(next);
@@ -720,7 +759,7 @@ export function draftMissing(draft: RequirementsDraft): string[] {
   };
   place(draft.start, "出发");
   // 短途缺终点表示在最后选中的站结束，不能因此阻止开始规划。
-  if (draft.mode !== "short" || draft.end) place(draft.end, "结束");
+  if (draft.end || (draft.mode !== "short" && draft.endPolicy !== "last")) place(draft.end, "结束");
   // 起终点都为 current 时一次定位即可同时解决，不重复要求用户授权。
   if (missing.filter((item) => item.startsWith("允许定位")).length > 1) missing.splice(missing.lastIndexOf("允许定位（或告诉我出发地点）"), 1);
   for (const visit of draft.visits) {
@@ -773,12 +812,13 @@ export const planStopSummarySchema = z.strictObject({
   externalId,
   name: placeName,
   startsAt: planningTimeSchema,
-  endsAt: planningTimeSchema,
+  endsAt: dayDeadlineSchema.optional(),
+  openArrival: z.literal(true).optional(),
   role: z.enum(["optional", "required", "fixed", "discovered"]),
   reason: text(80).optional(),
   /** 保存的是本计划采用的入站方式，不保存路线查询的交通分钟或费用；活动起止仍是自有计划内容。 */
   arrivalMode: travelModeSchema.optional(),
-});
+}).refine((stop) => stop.openArrival ? stop.endsAt === undefined : stop.endsAt !== undefined);
 
 /** 网页出处只保留 URL、标题、站点和日期，不复制摘要或正文到聊天记录。 */
 const webSourceSchema = z.strictObject({
@@ -807,7 +847,7 @@ const planCardBodySchema = z.strictObject({
   title: text(80),
   date: z.iso.date(),
   departAt: planningTimeSchema,
-  arriveAt: planningTimeSchema,
+  arriveAt: dayDeadlineSchema,
   start: draftChoiceSchema,
   end: draftChoiceSchema,
   stops: z.array(planStopSummarySchema).max(8),
@@ -821,6 +861,7 @@ const planCardBodySchema = z.strictObject({
  * 交通和直接前往只存名称和我们的时刻。同一次生成的各天共用 generationId；整趟保存后写 tripId。
  */
 const outingDayBodySchema = z.strictObject({
+  boundaryFingerprint: z.string().regex(/^[a-f0-9]{64}$/).optional(),
   generationId: z.uuid(),
   day: z.number().int().min(1).max(DRAFT_LIMITS.outingDays),
   date: z.iso.date(),
@@ -837,14 +878,16 @@ const outingDayBodySchema = z.strictObject({
       departAt: planningTimeSchema,
       arriveAt: planningTimeSchema,
       nextDay: z.boolean(),
+      rideId: transportId.optional(),
+      estimateSide: z.enum(["arrival", "departure"]).optional(),
       estimated: z.boolean(),
     }),
     z.strictObject({
       kind: z.literal("connect"),
       from: placeName,
       to: placeName,
-      departAt: planningTimeSchema,
-      arriveAt: planningTimeSchema,
+      departAt: dayDeadlineSchema,
+      arriveAt: dayDeadlineSchema,
       mode: travelModeSchema.optional(),
     }),
   ])).max(7),
@@ -871,6 +914,7 @@ const outingChangeBodySchema = z.strictObject({
       observationVersion: z.number().int().min(0),
     })).max(49),
   }),
+  cardFingerprint: z.string().regex(/^[a-f0-9]{64}$/).optional(),
   skip: z.strictObject({ journeyId: z.uuid(), activityId: z.uuid() }).optional(),
   before: z.array(z.strictObject({ day: z.number().int().min(1).max(7), stops: z.array(placeName).max(16) })).max(7),
   days: z.array(outingDayBodySchema).min(1).max(7),
@@ -1044,6 +1088,7 @@ export interface ConversationRepository {
   appendTurn(input: {
     conversationId: string;
     expectedCount: number;
+    expectedDraftFingerprint?: string;
     messages: readonly NewMessage[];
     draft?: RequirementsDraft;
     title?: string;
@@ -1121,7 +1166,7 @@ type PlaceInput = z.infer<typeof placeInputSchema>;
 /** V2.11：补丁里有没有出游才有的字段（日常卡片不接受）。 */
 function usesOutingFields(patch: DraftPatch): boolean {
   const own = [
-    "dates", "startAt", "endAt", "dailyWindow", "setLodging", "removeLodgingAreas", "removeStays", "addTransports", "updateTransports",
+    "dates", "startAt", "endAt", "dailyWindow", "dayBoundary", "setLodging", "removeLodgingAreas", "removeStays", "addTransports", "updateTransports",
     "removeTransports", "confirmOvernight", "moveToDay", "noDriving",
   ] as const;
   return own.some((field) => patch[field] !== undefined) ||
@@ -1140,7 +1185,26 @@ function applyOutingPatch(
   outing: OutingDraft,
   patch: DraftPatch,
   resolve: (input: PlaceInput) => DraftPlace | PatchError,
+  manualCard: boolean,
 ): PatchError | null {
+  if (patch.dayBoundary) {
+    const { date, reset, start, end, ...fields } = patch.dayBoundary;
+    const days = { ...outing.dayBoundaries };
+    if (reset) delete days[date];
+    else {
+      const entry = { ...days[date], ...fields };
+      for (const [key, value] of [["start", start], ["end", end]] as const) {
+        if (!value) continue;
+        const place = resolve(value);
+        if (typeof place === "string") return place;
+        if (place.status !== "bound") return "unknown_candidate";
+        entry[key] = place;
+      }
+      if (entry.endPolicy === "last") delete entry.end;
+      days[date] = entry;
+    }
+    outing.dayBoundaries = days;
+  }
   if (patch.dates !== undefined) {
     outing.dates = patch.dates;
     // 日期改短了，超出的那几晚住处、“住在哪”一起去掉。
@@ -1174,6 +1238,7 @@ function applyOutingPatch(
   for (const change of patch.updateTransports ?? []) {
     const item = outing.transports.find((entry) => entry.id === change.id);
     if (!item) return "unknown_transport";
+    if (manualCard) item.manualTicket = true;
     if (change.date !== undefined) {
       const day = dayOf(change);
       if (typeof day === "string") return day;
@@ -1192,7 +1257,7 @@ function applyOutingPatch(
     item.arriveDay = change.arriveDay ?? arrivalDay(item.departAt, item.arriveAt, item.arriveDay);
     ownRide(item, (["from", "to"] as const).filter((field) => change[field] !== undefined));
     // 时间、日期或到达哪天改了，过夜要重新确认。
-    if (change.day !== undefined || change.departAt !== undefined || change.arriveAt !== undefined || change.arriveDay !== undefined) {
+    if (change.from !== undefined || change.to !== undefined || change.mode !== undefined || change.day !== undefined || change.departAt !== undefined || change.arriveAt !== undefined || change.arriveDay !== undefined) {
       delete item.overnightConfirmed;
     }
   }
@@ -1213,13 +1278,15 @@ function applyOutingPatch(
     const earlier = outing.transports.find((item) => item.day === input.day && item.mode === input.mode &&
       same(item.from, from, !!item.suggested?.from) && same(item.to, to, !!item.suggested?.to));
     if (earlier) {
+      if (manualCard) earlier.manualTicket = true;
       earlier.from = from ?? earlier.from;
       earlier.to = to ?? earlier.to;
       ownRide(earlier, [...(from ? ["from" as const] : []), ...(to ? ["to" as const] : [])]);
       earlier.departAt = departAt ?? earlier.departAt;
       earlier.arriveAt = arriveAt ?? earlier.arriveAt;
       earlier.arriveDay = input.arriveDay ?? arrivalDay(earlier.departAt, earlier.arriveAt, earlier.arriveDay);
-      delete earlier.overnightConfirmed;
+      if (manualCard && input.arriveDay === "next") earlier.overnightConfirmed = true;
+      else delete earlier.overnightConfirmed;
       continue;
     }
     outing.transports.push({
@@ -1231,6 +1298,8 @@ function applyOutingPatch(
       departAt,
       arriveAt,
       arriveDay: input.arriveDay ?? arrivalDay(departAt, arriveAt, "same"),
+      ...(manualCard ? { manualTicket: true as const } : {}),
+      ...(manualCard && input.arriveDay === "next" ? { overnightConfirmed: true } : {}),
     });
   }
   if (outing.transports.length > DRAFT_LIMITS.transports) return "too_many_transports";
@@ -1257,7 +1326,7 @@ function applyOutingPatch(
     .map((item) => item.day));
   for (const set of patch.setLodging ?? []) {
     // “都住 X”时跳过在车上的那一晚；要设的几晚全在车上才算填错。
-    const nights = set.nights.filter((night) => !onBoard.has(night));
+    const nights = set.nights.filter((night) => !onBoard.has(night) || set.place === null);
     if (!nights.length && set.place !== null) return "night_on_board";
     const place = set.place === null ? null : resolve(set.place);
     if (typeof place === "string") return place;
@@ -1269,6 +1338,7 @@ function applyOutingPatch(
   // 过夜交通那一晚在车上；交通删了或不再过夜，这一晚恢复成未定。
   outing.lodging = outing.lodging.filter((item) => !item.onBoard || onBoard.has(item.night));
   for (const night of onBoard) {
+    if (outing.lodging.some((item) => item.night === night && item.place && item.source !== "suggested")) return "night_on_board";
     outing.lodging = [...outing.lodging.filter((item) => item.night !== night), { night, place: null, onBoard: true }];
   }
   outing.lodging.sort((a, b) => a.night - b.night);
@@ -1368,6 +1438,12 @@ function outingProblem(draft: RequirementsDraft, outing: OutingDraft): PatchErro
   if (draft.interests.length > DRAFT_LIMITS.outingInterests) return "too_many_interests";
   if (outing.dates && outing.dates.from > outing.dates.to) return "dates_order";
   const days = outingDays(outing);
+  for (const [date, entry] of Object.entries(outing.dayBoundaries ?? {})) {
+    if (!outing.dates || date < outing.dates.from || date > outing.dates.to) return "day_outside_dates";
+    const from = entry.startsAt ?? (date === outing.dates.from ? outing.startAt : null) ?? outing.dailyWindow.startsAt;
+    const to = entry.endsAt ?? (date === outing.dates.to ? outing.endAt : null) ?? outing.dailyWindow.endsAt;
+    if (minutes(from) >= minutes(to)) return "window_order";
+  }
   if (days > DRAFT_LIMITS.outingDays) return "too_many_days";
   if (minutes(outing.dailyWindow.startsAt) >= minutes(outing.dailyWindow.endsAt)) return "window_order";
   if (days) {
@@ -1383,6 +1459,11 @@ function outingProblem(draft: RequirementsDraft, outing: OutingDraft): PatchErro
     if (!visit.day) return "fixed_needs_day";
     if (visit.startsAt && visit.endsAt && minutes(visit.startsAt) >= minutes(visit.endsAt)) return "fixed_time";
   }
+  const intervals = outing.transports.flatMap((ride) => ride.departAt && ride.arriveAt ? [{
+    start: (ride.day - 1) * 1440 + minutes(ride.departAt),
+    end: (ride.day - 1 + Number(ride.arriveDay === "next")) * 1440 + minutes(ride.arriveAt),
+  }] : []).sort((left, right) => left.start - right.start);
+  if (intervals.some((ride, index) => index > 0 && ride.start < intervals[index - 1].end)) return "transport_time_order";
   const fixedPerDay = new Map<number, number>();
   for (const visit of draft.visits.filter((item) => item.role === "fixed")) fixedPerDay.set(visit.day!, (fixedPerDay.get(visit.day!) ?? 0) + 1);
   if ([...fixedPerDay.values()].some((count) => count > DRAFT_LIMITS.fixedVisits)) return "too_many_fixed";
@@ -1402,8 +1483,9 @@ function outingMissing(draft: RequirementsDraft, outing: OutingDraft): string[] 
     if (value?.status === "choose") missing.push(`选择${label}`);
     else if (value?.status === "current") missing.push("允许定位（或告诉我出发地点）");
   };
-  if (!draft.start) missing.push("出发地点");
-  place(draft.start, "出发地点");
+  const start = (outing.dates && outing.dayBoundaries?.[outing.dates.from]?.start) ?? draft.start;
+  if (!start) missing.push("出发地点");
+  place(start, "出发地点");
   place(draft.end, "结束地点");
   for (const night of outing.lodging) place(night.place, `第 ${night.night} 晚的住处`);
   for (const item of outing.transports) {
@@ -1420,9 +1502,10 @@ function outingMissing(draft: RequirementsDraft, outing: OutingDraft): string[] 
       missing.push(`${visit.place.status === "bound" ? visit.place.name : "固定事项"}的时间`);
     }
   }
-  if (draft.visits.length === 0 && draft.interests.length === 0) missing.push("想去的地方或兴趣");
+  if (!outing.transports.length && draft.visits.length === 0 && draft.interests.length === 0) missing.push("想去的地方或兴趣");
   const cities = new Set([
-    draft.start, draft.end, ...outing.lodging.map((item) => item.place), ...draft.visits.map((visit) => visit.place),
+    start, draft.end, ...Object.values(outing.dayBoundaries ?? {}).flatMap((entry) => [entry.start, entry.end]),
+    ...outing.lodging.map((item) => item.place), ...draft.visits.map((visit) => visit.place),
     ...outing.transports.flatMap((item) => [item.from, item.to]),
   ].flatMap((value) => (value?.status === "bound" && value.city ? [value.city] : [])));
   const ways = draft.travel?.allowed ?? [];
@@ -1490,6 +1573,7 @@ export function switchDraftMode(
       draft: requirementsDraftSchema.parse({
         ...emptyOutingDraft(draft.city),
         start: draft.start,
+        endPolicy: draft.endPolicy, manualBoundaries: draft.manualBoundaries,
         end: draft.end,
         visits,
         interests: draft.interests,
@@ -1539,6 +1623,7 @@ export function switchDraftMode(
       endsAt: draft.outing?.endAt ?? null,
       start: here(draft.start) ? draft.start : null,
       end: here(draft.end) ? draft.end : null,
+      endPolicy: here(draft.end) ? draft.endPolicy : "last", manualBoundaries: draft.manualBoundaries,
       visits,
       interests,
       ...(draft.travel ? { travel: draft.travel } : {}),

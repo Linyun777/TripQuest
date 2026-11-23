@@ -1,3 +1,4 @@
+import { fingerprint } from "@tripquest/application/fingerprint";
 import type {
   CommitAdjustmentResult,
   ConfirmedAdjustmentDraft,
@@ -59,6 +60,7 @@ import { replanBaseFingerprint, type ReplanConfirmReply } from "@tripquest/appli
 import {
   assertRealDayMatchesJourney,
   storedRealDaySchema,
+  serializeRealDay,
   type InitialRealDayDraft,
   type RealDayRepository,
   type RealDaySaveOutcome,
@@ -83,6 +85,7 @@ import {
 import type { JourneyDatabase } from "./connection";
 import {
   trips,
+  conversations,
   journeys,
   dayPlanDetails,
   generatedDayEditConfirmations,
@@ -184,6 +187,13 @@ export class DrizzleJourneyRepository
     }));
   }
 
+  private async cardIsCurrent(tx: JourneyTransaction, version: InitialRealDayDraft["cardVersion"]) {
+    if (!version) return true;
+    const [card] = await tx.select({ draft: conversations.draft }).from(conversations)
+      .where(and(eq(conversations.id, version.conversationId), eq(conversations.userId, this.userId))).for("update");
+    return !!card && fingerprint(card.draft) === version.fingerprint;
+  }
+
   async findTripCreation(generationId: string): Promise<{ tripId: string } | null> {
     const [row] = await this.database.select({ tripId: trips.id }).from(trips)
       .where(and(eq(trips.generationId, generationId), eq(trips.userId, this.userId))).limit(1);
@@ -196,7 +206,7 @@ export class DrizzleJourneyRepository
     const checked = trip.days.map((entry) => {
       const realDay = storedRealDaySchema.parse(entry.journey.realDay);
       assertRealDayMatchesJourney(realDay, entry.journey);
-      return { ...entry, realDay, snapshots: assertInitialJourneyDraft(entry.journey, true) };
+      return { ...entry, realDay, snapshots: assertInitialJourneyDraft(entry.journey, true, realDay) };
     });
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
@@ -204,6 +214,7 @@ export class DrizzleJourneyRepository
           const [prior] = await tx.select({ tripId: trips.id }).from(trips)
             .where(and(eq(trips.generationId, trip.generationId), eq(trips.userId, this.userId))).limit(1);
           if (prior) return { status: "already_saved", tripId: prior.tripId };
+          if (!await this.cardIsCurrent(tx, trip.cardVersion)) return { status: "draft_changed" };
           const createdAt = parseChinaDateTime(trip.createdAt, "trip createdAt");
           await tx.insert(trips).values({
             id: trip.tripId,
@@ -221,7 +232,7 @@ export class DrizzleJourneyRepository
               kind: "real_day",
               runId: entry.journey.creationRunId,
               intentFingerprint: entry.journey.creationIntentFingerprint,
-              details: entry.realDay,
+              details: serializeRealDay(entry.realDay),
             }, { id: trip.tripId, day: entry.day, part: entry.part });
           }
           return { status: "saved", tripId: trip.tripId };
@@ -293,7 +304,7 @@ export class DrizzleJourneyRepository
     const checked = commit.replace.flatMap((entry) => entry.journeys.map((item) => {
       const realDay = storedRealDaySchema.parse(item.journey.realDay);
       assertRealDayMatchesJourney(realDay, item.journey);
-      return { ...item, realDay, snapshots: assertInitialJourneyDraft(item.journey, true) };
+      return { ...item, realDay, snapshots: assertInitialJourneyDraft(item.journey, true, realDay) };
     }));
     const listed = async (tx: JourneyTransaction) => (await tx.select({ journeyId: journeys.id, day: journeys.tripDay, part: journeys.tripPart })
       .from(journeys).where(and(eq(journeys.tripId, commit.tripId), eq(journeys.userId, this.userId)))).map((row) => ({ journeyId: row.journeyId, day: row.day!, part: row.part! }));
@@ -303,6 +314,7 @@ export class DrizzleJourneyRepository
           const [row] = await tx.select().from(trips).where(this.trip(commit.tripId)).for("update").limit(1);
           if (!row) return { status: "not_found" };
           if (storedTripSchema.parse(row.details).lastChangeId === commit.changeId) return { status: "already_saved", journeys: await listed(tx) };
+          if (!await this.cardIsCurrent(tx, commit.cardVersion)) return { status: "stale" };
           if (!outingBaseIsCurrent(commit.base, await this.tripBase(tx, commit.tripId, row.version))) return { status: "stale" };
           const confirmedAt = parseChinaDateTime(commit.confirmedAt, "outing change confirmedAt");
           if (commit.skip) {
@@ -331,7 +343,7 @@ export class DrizzleJourneyRepository
               kind: "real_day",
               runId: item.journey.creationRunId,
               intentFingerprint: item.journey.creationIntentFingerprint,
-              details: item.realDay,
+              details: serializeRealDay(item.realDay),
             }, { id: commit.tripId, day: item.day, part: item.part });
           }
           await tx.update(trips).set({ details, version: row.version + 1, updatedAt: confirmedAt }).where(this.trip(commit.tripId));
@@ -422,7 +434,7 @@ export class DrizzleJourneyRepository
       );
     }
 
-    await transaction.insert(planActivities).values(
+    if (draft.currentPlan.activities.length) await transaction.insert(planActivities).values(
       draft.currentPlan.activities.map((activity) => {
         const snapshot = snapshotsByActivityId.get(activity.id);
         if (snapshot === undefined) {
@@ -532,7 +544,7 @@ export class DrizzleJourneyRepository
     if (draft.creationRunId !== details.context.creationRunId) {
       throw new JourneyPersistenceError("Real creation does not match its run");
     }
-    const snapshots = assertInitialJourneyDraft(draft, true);
+    const snapshots = assertInitialJourneyDraft(draft, true, details);
     const replay = (prior: { journeyId: string; intentFingerprint: string }): RealDaySaveOutcome =>
       prior.intentFingerprint === draft.creationIntentFingerprint
         ? { status: "already_saved", journeyId: prior.journeyId, planVersion: 1 }
@@ -550,11 +562,12 @@ export class DrizzleJourneyRepository
               intentFingerprint: prior.creationKind === "real_day" ? prior.intentFingerprint ?? "" : "",
             });
           }
+          if (!await this.cardIsCurrent(tx, draft.cardVersion)) return { status: "draft_changed" };
           await this.insertInitialJourney(tx, draft, snapshots, {
             kind: "real_day",
             runId: draft.creationRunId,
             intentFingerprint: draft.creationIntentFingerprint,
-            details,
+            details: serializeRealDay(details),
           });
           return { status: "saved", journeyId: draft.journeyId, planVersion: 1 };
         }, { isolationLevel: "serializable", accessMode: "read write" });
@@ -903,7 +916,7 @@ export class DrizzleJourneyRepository
       .orderBy(asc(reservations.id));
 
     // 只有确认后的重排版本允许未来活动为空；初始、编辑和手工版本仍要求至少一项。
-    const minimumRows = details?.schemaVersion === "stored-day-plan.v3" ? 0 : 1;
+    const minimumRows = details?.schemaVersion === "stored-day-plan.v3" || realDay?.activities.at(-1)?.openArrival ? 0 : 1;
     if (activityRows.length < minimumRows || activityRows.length > 8) {
       throw new JourneyPersistenceError(
         "Current plan has an invalid number of activities",
@@ -1240,7 +1253,7 @@ export class DrizzleJourneyRepository
             journeyId: input.journeyId, version, parentVersion: input.basePlanVersion, isCurrent: true,
             changeReason: "user_confirmed_replan", createdAt: confirmedAt,
           });
-          await tx.insert(planActivities).values(input.adjusted.next.currentPlan.activities.map((activity, position) => ({
+          if (input.adjusted.next.currentPlan.activities.length) await tx.insert(planActivities).values(input.adjusted.next.currentPlan.activities.map((activity, position) => ({
             journeyId: input.journeyId,
             planVersion: version,
             activityId: activity.id,
@@ -1253,7 +1266,7 @@ export class DrizzleJourneyRepository
             locked: activity.locked,
             reservationId: activity.reservationId ?? null,
           })));
-          await tx.insert(dayPlanDetails).values({ journeyId: input.journeyId, planVersion: version, details: input.adjusted.realDay });
+          await tx.insert(dayPlanDetails).values({ journeyId: input.journeyId, planVersion: version, details: serializeRealDay(input.adjusted.realDay) });
           await tx.insert(generatedDayReplanConfirmations).values({
             journeyId: input.journeyId, runId: input.runId, intentFingerprint: input.intentFingerprint,
             basePlanVersion: input.basePlanVersion, baseObservationVersion: observation, resultPlanVersion: version, confirmedAt,
@@ -1609,6 +1622,7 @@ function assertConfirmedDraft(
 function assertInitialJourneyDraft(
   draft: InitialJourneyDraft,
   generated = false,
+  realDay?: InitialRealDayDraft["realDay"],
 ): Map<string, InitialJourneyDraft["activitySnapshots"][number]> {
   if (draft.currentPlan.journeyId !== draft.journeyId) {
     throw new JourneyPersistenceError(
@@ -1625,7 +1639,7 @@ function assertInitialJourneyDraft(
     );
   }
   if (
-    draft.currentPlan.activities.length === 0 ||
+    (draft.currentPlan.activities.length === 0 && !realDay?.activities.at(-1)?.openArrival) ||
     draft.currentPlan.activities.length > 8 ||
     draft.activitySnapshots.length !== draft.currentPlan.activities.length
   ) {
@@ -1665,7 +1679,7 @@ function assertInitialJourneyDraft(
     }
     if (
       !activity.startsAt.startsWith(`${draft.currentPlan.date}T`) ||
-      !activity.endsAt.startsWith(`${draft.currentPlan.date}T`)
+      (!activity.endsAt.startsWith(`${draft.currentPlan.date}T`) && !(realDay && Date.parse(activity.endsAt) === Date.parse(draft.currentPlan.date + "T00:00:00+08:00") + 86_400_000))
     ) {
       throw new JourneyPersistenceError(
         "Activities must belong to the current plan date",

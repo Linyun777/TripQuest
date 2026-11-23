@@ -1,13 +1,16 @@
+import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 import { emptyDraft, type RequirementsDraft } from "@tripquest/application/conversation";
 import { fingerprint } from "@tripquest/application/fingerprint";
 import { createCandidateRunner, createShortScriptedModel } from "@tripquest/agent/short";
 import type { PlaceSummary, ProviderEvidence } from "@tripquest/providers";
-import { createPlanService, type PlanEvent } from "../plan-service";
+import { asTestUser } from "../../../test-support/users";
+import { createChoicesHandler } from "../../api/conversations/plan-handlers";
+import { createPlanService, type PlanEvent, type PlanServiceOptions } from "../plan-service";
 import { MemoryConversations } from "./memory-conversations";
 
-// V2.4 short trips through the plan service: synthetic places only, no provider data.
+// V2.4 short trips with synthetic places and a scripted model.
 const NOW = Date.parse("2026-10-15T06:43:00Z"); // 14:43 in Hangzhou
 const evidence: ProviderEvidence = { provider: "amap", sourceKind: "live", attribution: "高德地图", retrievedAt: new Date(NOW).toISOString() };
 const at = (externalId: string, name: string, longitude: number, latitude: number): PlaceSummary => ({
@@ -41,37 +44,45 @@ const amap = {
 
 function setup() {
   const repository = new MemoryConversations();
+  const conversationId = randomUUID();
   const draft: RequirementsDraft = {
     ...emptyDraft(), mode: "short", date: "2026-10-15", startsAt: "14:45", endsAt: "18:45",
     start: { status: "bound", externalId: "SYN-HOME", name: "合成家" }, end: null,
     interests: [{ id: "i1", text: "吃点辣的" }, { id: "i2", text: "喝瑞幸" }],
     travel: { allowed: ["walking"], prefer: "balanced" },
   };
-  repository.conversations.set("c1", { id: "c1", title: "现在出发", status: "active", journeyId: null, draft, messageCount: 0, createdAt: "", updatedAt: "" });
-  repository.messages.set("c1", []);
+  repository.conversations.set(conversationId, { id: conversationId, title: "现在出发", status: "active", journeyId: null, draft, messageCount: 0, createdAt: "", updatedAt: "" });
+  repository.messages.set(conversationId, []);
   const model = createShortScriptedModel((context) => context.stage === "queries"
     ? { queries: [/瑞幸/.test(context.interest.text) ? "瑞幸咖啡" : "川菜"] }
     : { picks: (context.found ?? []).map((item) => ({ id: item.id, reason: "合适", stayMinutes: 45 })) });
-  const service = createPlanService({
+  const options: PlanServiceOptions = {
     now: () => NOW,
     repository: () => repository,
     amap: () => amap as never,
     runner: async () => { throw new Error("no day planner in short trips"); },
     candidates: async (provider) => createCandidateRunner({ provider, model }),
-  });
+  };
   const run = async (call: (emit: (event: PlanEvent) => void) => Promise<void>) => {
     const events: PlanEvent[] = [];
     await call((event) => events.push(event));
     return events.at(-1)!;
   };
-  return { repository, service, run, print: fingerprint(draft) };
+  return {
+    conversationId,
+    repository,
+    service: createPlanService(options),
+    choices: createChoicesHandler({ ...options, user: asTestUser }),
+    run,
+    print: fingerprint(draft),
+  };
 }
 
-describe("V2.4 short trips in the plan service", () => {
+describe("V2.4 short trips", () => {
   it("offers each step around the last pick, refuses stale answers, and plans the picks in order", async () => {
-    const { repository, service, run, print } = setup();
+    const { conversationId, repository, service, choices, run, print } = setup();
     const signal = new AbortController().signal;
-    const first = await run((emit) => service.plan("c1", print, emit, signal));
+    const first = await run((emit) => service.plan(conversationId, print, emit, signal));
     if (first.type !== "done" || first.messages[0].kind !== "choices") throw new Error(JSON.stringify(first));
     const step1 = first.messages[0];
     expect(step1).toMatchObject({ step: 1, total: 2, interest: "吃点辣的", anchorName: "你的位置", open: true });
@@ -79,10 +90,26 @@ describe("V2.4 short trips in the plan service", () => {
     expect(step1.options[0]).toMatchObject({ travel: { mode: "walking", minutes: 5 } });
     expect(first.mapStops.map((stop) => stop.label)).toEqual(["起", "1", "2"]);
     // Stored without distances, routes or ratings.
-    expect(JSON.stringify(repository.messages.get("c1"))).not.toMatch(/meters|travel|rating|minutes/);
+    expect(JSON.stringify(repository.messages.get(conversationId))).not.toMatch(/meters|travel|rating|minutes/);
 
-    const choose = (messageId: string, pick?: string) =>
-      run((emit) => service.choose("c1", { tripId: step1.tripId, messageId, fingerprint: print, ...(pick ? { pick } : {}) }, emit, signal));
+    const choose = async (messageId: string, pick?: string): Promise<PlanEvent> => {
+      const request = new Request(`http://localhost/api/conversations/${conversationId}/choices`, {
+        method: "POST",
+        headers: { "content-type": "application/json", host: "localhost", origin: "http://localhost" },
+        body: JSON.stringify({
+          tripId: step1.tripId,
+          messageId,
+          fingerprint: print,
+          requestKey: randomUUID(),
+          pick,
+        }),
+      });
+      const response = await choices(request, { params: Promise.resolve({ conversationId }) });
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-type")).toContain("application/x-ndjson");
+      const lines = (await response.text()).trim().split("\n");
+      return JSON.parse(lines.at(-1)!) as PlanEvent;
+    };
     const second = await choose(step1.id, "SYN-SPICY-1");
     if (second.type !== "done" || second.messages[0].kind !== "choices") throw new Error(JSON.stringify(second));
     expect(second.updated).toMatchObject({ id: step1.id, chosen: "SYN-SPICY-1", open: false });
@@ -104,14 +131,14 @@ describe("V2.4 short trips in the plan service", () => {
   });
 
   it("refuses answers once the card changed", async () => {
-    const { repository, service, run, print } = setup();
+    const { conversationId, repository, service, run, print } = setup();
     const signal = new AbortController().signal;
-    const first = await run((emit) => service.plan("c1", print, emit, signal));
+    const first = await run((emit) => service.plan(conversationId, print, emit, signal));
     if (first.type !== "done" || first.messages[0].kind !== "choices") throw new Error("start");
-    const conversation = repository.conversations.get("c1")!;
-    repository.conversations.set("c1", { ...conversation, draft: { ...conversation.draft, interests: [{ id: "i1", text: "吃火锅" }] } });
+    const conversation = repository.conversations.get(conversationId)!;
+    repository.conversations.set(conversationId, { ...conversation, draft: { ...conversation.draft, interests: [{ id: "i1", text: "吃火锅" }] } });
     const step1 = first.messages[0];
-    expect(await run((emit) => service.choose("c1", { tripId: step1.tripId, messageId: step1.id, fingerprint: print, pick: "SYN-SPICY-1" }, emit, signal)))
+    expect(await run((emit) => service.choose(conversationId, { tripId: step1.tripId, messageId: step1.id, fingerprint: print, pick: "SYN-SPICY-1" }, emit, signal)))
       .toMatchObject({ type: "refused", status: "conflict" });
   });
 });

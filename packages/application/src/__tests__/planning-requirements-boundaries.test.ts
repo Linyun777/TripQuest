@@ -209,8 +209,9 @@ describe("S5.1 planning requirements · independent boundaries", () => {
       ).toBe(ok);
     }
 
+    expect(accepted(requirements([], { startsAt: "09:00", endsAt: "24:00" }))).toBe(true);
     const windows: Window[] = [
-      { startsAt: "09:00", endsAt: "24:00" },
+      { startsAt: "09:00", endsAt: "24:01" },
       { startsAt: "9:00", endsAt: "12:00" },
       { startsAt: "09:00:00", endsAt: "12:00" },
       { startsAt: "10:00", endsAt: "10:00" },

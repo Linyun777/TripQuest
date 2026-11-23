@@ -9,7 +9,7 @@ import {
 } from "./contracts";
 import { serializeContext, SYSTEM_PROMPT, FEEDBACK_SYSTEM_PROMPT, FEEDBACK_PROMPT_VERSION } from "./prompt";
 import { resolveProfile } from "./profile";
-import { currentRun, RunBudgetError } from "./runs";
+import { activeRepairs, currentRun, RunBudgetError } from "./runs";
 import { assertLocalTracingOnly } from "./tracing";
 
 export { resolveProfile } from "./profile";
@@ -33,12 +33,24 @@ const actionName = (decision: unknown): string => {
   return kind(fields) ?? (listed.length ? listed.join("+").slice(0, 80) : "decision");
 };
 
+export interface ModelReservation {
+  id: string;
+  settle(receipt: {
+    sent: boolean;
+    provider: string;
+    requested: string;
+    returned?: string | null;
+    usage: { input: number; output: number; hit: number | null; miss: number | null } | null;
+  }): Promise<void>;
+}
+export type BeforeModel = () => void | ModelReservation | Promise<void | ModelReservation>;
+
 export interface LiveModelOptions {
   config: unknown;
   profileId: string;
   environment: Readonly<Record<string, string | undefined>>;
   allowLoopback?: boolean;
-  beforeRequest?: () => void | Promise<void>;
+  beforeRequest?: BeforeModel;
   /** 对话回复比单步规划动作需要更长输出，只允许提升到 2048 tokens（V2.11 出游一次写十来个地点），不能任意扩大。 */
   /** 128：V2.9 意图分类只输出 7 个分数。 */
   outputTokenLimit?: 128 | 512 | 1024 | 2048;
@@ -73,16 +85,22 @@ export function createJsonDecisionTransport(options: LiveModelOptions) {
     mode: "live" as const,
     provider: profile.providerId,
     model: profile.model,
-    async request(systemPrompt: string, content: string, signal: AbortSignal): Promise<ModelReply> {
+    async request(systemPrompt: string, content: string, signal: AbortSignal, prepaid?: void | ModelReservation): Promise<ModelReply> {
       assertLocalTracingOnly();
       // V3.0：当前运行（没有就不记）。模型调用在这里记一步并扣共用预算。
       const run = currentRun();
       const started = Date.now();
+      let reservation = prepaid;
+      let sent = false;
+      let billedUsage: Parameters<ModelReservation["settle"]>[0]["usage"] = null;
       const recordCall = (name: string, code: string) => {
         if (!run) return;
         if (usage) run.addTokens(usage);
+        const repairs = activeRepairs(run);
         run.step("model_call", name, {
+          ...(repairs.length ? { repairs } : {}),
           code,
+          ...(reservation ? { eventId: reservation.id } : {}),
           ...(usage ? { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, cacheHitTokens: usage.cacheHitTokens } : {}),
         }, Date.now() - started);
       };
@@ -91,6 +109,7 @@ export function createJsonDecisionTransport(options: LiveModelOptions) {
       let requestCount = 0;
       let usage: Usage | null = null;
       let returnedModel: string | undefined;
+      let billingModel: string | null | undefined;
       let fingerprint: string | undefined;
       let requestId: string | undefined;
       let failure: ErrorCode | null = null;
@@ -115,7 +134,7 @@ export function createJsonDecisionTransport(options: LiveModelOptions) {
             if (signal.aborted) throw new DecisionModelError("timeout");
             if (requestCount !== 0) throw new DecisionModelError("transport");
             requestCount += 1;
-            await options.beforeRequest?.();
+            reservation ??= await options.beforeRequest?.();
             if (signal.aborted) throw new DecisionModelError("timeout");
             // 用户每日上限先过（beforeRequest），再扣这次请求的共用预算；用完不发请求。
             try {
@@ -125,11 +144,34 @@ export function createJsonDecisionTransport(options: LiveModelOptions) {
               throw error;
             }
             totalRequests += 1;
+            sent = true;
             const response = await fetch(url, {
               ...init,
               signal: AbortSignal.any([signal, ...(init?.signal ? [init.signal] : [])]),
               redirect: "error",
             });
+            const body = record(await response.clone().json().catch(() => null));
+            // usage 可缺省，缺省保留 null，不能把供应商没有返回用量写成零消耗。
+            const raw = record(body.usage);
+            if (count(raw.prompt_tokens) && count(raw.completion_tokens)) {
+              const hit = raw.prompt_cache_hit_tokens ?? record(raw.prompt_tokens_details).cached_tokens;
+              const miss = raw.prompt_cache_miss_tokens;
+              billedUsage = {
+                input: raw.prompt_tokens, output: raw.completion_tokens,
+                hit: count(hit) ? hit : null, miss: count(miss) ? miss : null,
+              };
+            }
+            if (raw && count(raw.prompt_tokens) && count(raw.completion_tokens) && count(raw.total_tokens)) {
+              usage = {
+                inputTokens: raw.prompt_tokens,
+                outputTokens: raw.completion_tokens,
+                totalTokens: raw.total_tokens,
+                cacheHitTokens: count(raw.prompt_cache_hit_tokens) ? raw.prompt_cache_hit_tokens : null,
+                cacheMissTokens: count(raw.prompt_cache_miss_tokens) ? raw.prompt_cache_miss_tokens : null,
+              };
+            }
+            returnedModel = safeIdentifier(body.model);
+            billingModel = body.model == null ? undefined : returnedModel ?? null;
             if (!response.ok) {
               failure = response.status === 401 || response.status === 403 ? "auth"
                 : response.status === 402 ? "quota"
@@ -138,7 +180,6 @@ export function createJsonDecisionTransport(options: LiveModelOptions) {
             } else {
               // 仅提取白名单元信息、用量和请求标识；原始响应或推理正文不作为诊断数据保留。
               invalidResponse = true;
-              const body = record(await response.clone().json());
               const choices = Array.isArray(body.choices) ? body.choices : [];
               const choice = record(choices[0]);
               const message = record(choice.message);
@@ -147,18 +188,6 @@ export function createJsonDecisionTransport(options: LiveModelOptions) {
                 (Array.isArray(message.tool_calls) && message.tool_calls.length > 0) ||
                 !!message.function_call || !!message.refusal ||
                 typeof message.content !== "string" || !message.content.trim();
-              // usage 可缺省，缺省保留 null，不能把供应商没有返回用量写成零消耗。
-              const raw = record(body.usage);
-              if (raw && count(raw.prompt_tokens) && count(raw.completion_tokens) && count(raw.total_tokens)) {
-                usage = {
-                  inputTokens: raw.prompt_tokens,
-                  outputTokens: raw.completion_tokens,
-                  totalTokens: raw.total_tokens,
-                  cacheHitTokens: count(raw.prompt_cache_hit_tokens) ? raw.prompt_cache_hit_tokens : null,
-                  cacheMissTokens: count(raw.prompt_cache_miss_tokens) ? raw.prompt_cache_miss_tokens : null,
-                };
-              }
-              returnedModel = safeIdentifier(body.model);
               fingerprint = safeIdentifier(body.system_fingerprint);
               requestId = safeIdentifier(body.id);
             }
@@ -198,6 +227,20 @@ export function createJsonDecisionTransport(options: LiveModelOptions) {
           throw new DecisionModelError(error.code, { usage, returnedModel, fingerprint, requestId });
         }
         throw new DecisionModelError(failure ?? (invalidResponse ? "invalid_output" : "transport"));
+      } finally {
+        if (reservation) {
+          try {
+            await reservation.settle({
+              sent,
+              provider: profile.providerId,
+              requested: profile.model,
+              returned: billingModel,
+              usage: billedUsage,
+            });
+          } catch {
+            console.warn("[usage] receipt settlement pending");
+          }
+        }
       }
     },
   };

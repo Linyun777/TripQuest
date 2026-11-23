@@ -40,7 +40,7 @@ export function OutingDayCard({
             {view.explanation ?? "这一天没排出来。"}
           </p>
         ) : (
-          view.parts.map((part, index) => <Part key={index} part={part} />)
+          view.parts.map((part, index) => <Part key={index} part={part} date={view.date} />)
         )}
         {view.notes.length > 0 && (
           <ul className="space-y-1.5 text-sm text-ink-soft">
@@ -65,7 +65,7 @@ export function OutingDayCard({
   );
 }
 
-function Part({ part }: { part: OutingDayPartView }) {
+function Part({ part, date }: { part: OutingDayPartView; date: string }) {
   if (part.kind === "plan") return <PlanTimeline plan={part.plan} />;
   if (part.kind === "connect") {
     return (
@@ -80,11 +80,11 @@ function Part({ part }: { part: OutingDayPartView }) {
     <div className="rounded-(--radius-field) border border-line px-3.5 py-2.5 text-sm">
       <p className="tabular flex items-center gap-2 font-medium">
         <Icon className="size-4 shrink-0 text-lake-600" />
-        {part.departAt} {part.from} → {part.nextDay ? "次日 " : ""}{part.arriveAt} {part.to}
+        {part.departAt} {part.from} → {part.nextDay ? "次日 " + new Date(Date.parse(date) + 86400000).toISOString().slice(5, 10) + " " : ""}{part.arriveAt} {part.to}
       </p>
       <p className="mt-1 text-xs text-ink-faint">
         {MODE[part.mode].label}
-        {part.estimated ? " · 没填车次，时间是估计" : " · 车次由你填写"}
+        {part.estimateSide === "arrival" ? " · 到站时间为估计" : part.estimateSide === "departure" ? " · 发车时间为估计" : part.estimated ? " · 车次时间为估计" : " · 车次由你填写"}
       </p>
     </div>
   );

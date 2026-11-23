@@ -165,7 +165,7 @@ export class AgentRun {
 
   /** 记一步。摘要只放短的结构化内容（动作、提示码、数量、编号），调用方负责不放地址、坐标、正文。 */
   /** `at` 给事后补记的步骤用（如对话的分流发生在一轮开头）。 */
-  step(kind: StepKind, name: string, summary: Record<string, unknown> = {}, latencyMs?: number, at?: Date): void {
+  step(kind: StepKind, name: string, summary: Record<string, unknown> = {}, latencyMs?: number, at?: Date): number | undefined {
     if (this.finished) return;
     if (this.seq >= STEP_LIMIT) {
       this.dropped += 1;
@@ -181,6 +181,7 @@ export class AgentRun {
       summary,
       at: at ?? new Date(this.state.now()),
     });
+    return this.seq;
   }
 
   /** 给这个运行最近的一次模型调用补上 Agent 自己才知道的内容（如对话的决定）。 */
@@ -300,6 +301,51 @@ const storage = new AsyncLocalStorage<AgentRun>();
 
 export function currentRun(): AgentRun | undefined {
   return storage.getStore();
+}
+
+// A repair can call a child day planner, which may itself need a correction.
+type RepairRef = { run: string; seq: number };
+const repairs = new AsyncLocalStorage<{ root: string; refs: RepairRef[] }>();
+
+export function activeRepairs(run: AgentRun): RepairRef[] {
+  const scope = repairs.getStore();
+  return scope?.root === run.rootId ? scope.refs : [];
+}
+
+export function withRepair<T>(
+  name: string,
+  reason: string | null | undefined,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const run = currentRun();
+  if (!reason || !run) return operation();
+  const code = /^[a-z_]+(?=[:; ]|$)/.exec(reason)?.[0] ?? "invalid_output";
+  const seq = run.step("repair", name, { code });
+  if (seq === undefined) return operation();
+  const refs = [...activeRepairs(run), { run: run.id, seq }];
+  return repairs.run({ root: run.rootId, refs }, operation);
+}
+
+export async function timedTool<T>(
+  name: string,
+  operation: () => Promise<T>,
+  failure?: (result: T) => string | undefined,
+): Promise<T> {
+  const run = currentRun();
+  if (!run) return operation();
+  const start = new Date();
+  const tick = performance.now();
+  let code: string | undefined;
+  try {
+    const result = await operation();
+    code = failure?.(result);
+    return result;
+  } catch (error) {
+    code = errorOutcome(error);
+    throw error;
+  } finally {
+    run.step("tool_call", name, code ? { code } : {}, performance.now() - tick, start);
+  }
 }
 
 export function withRun<T>(run: AgentRun, operation: () => Promise<T>): Promise<T> {

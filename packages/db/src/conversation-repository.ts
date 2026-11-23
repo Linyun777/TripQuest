@@ -133,12 +133,12 @@ export class DrizzleConversationRepository implements ConversationRepository {
     const draft = input.draft ? requirementsDraftSchema.parse(input.draft) : undefined;
     return this.database.transaction(async (transaction) => {
       const [row] = await transaction
-        .select({ messageCount: conversations.messageCount })
+        .select({ messageCount: conversations.messageCount, ...(input.expectedDraftFingerprint ? { draft: conversations.draft } : {}) })
         .from(conversations)
         .where(this.mine(input.conversationId))
         .for("update");
       if (!row) return { status: "not_found" } as const;
-      if (row.messageCount !== input.expectedCount) return { status: "conflict" } as const;
+      if (row.messageCount !== input.expectedCount || (input.expectedDraftFingerprint && fingerprint(row.draft) !== input.expectedDraftFingerprint)) return { status: "conflict" } as const;
       // 消息序号从锁内的最新计数连续分配，整轮消息和草案一起提交，页面不会读到半轮对话。
       const messageCount = row.messageCount + messages.length;
       if (messages.length > 0) {

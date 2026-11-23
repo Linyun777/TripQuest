@@ -68,6 +68,7 @@ export interface DayPlanningInput {
   readonly window: DayWindow;
   readonly startPlaceId: string;
   readonly endPlaceId: string;
+  readonly endPolicy?: "last" | "prefer" | "must";
   readonly places: readonly DayPlace[];
   readonly activities: readonly DayActivity[];
   readonly bufferMinutes: 5 | 10;
@@ -77,6 +78,7 @@ export interface DayPlanningInput {
 }
 
 export interface DayScheduledActivity extends DayWindow {
+  readonly openArrival?: true;
   readonly activityId: string;
   readonly placeId: string;
   readonly arrivesAt: number;

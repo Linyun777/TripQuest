@@ -34,5 +34,7 @@ agent-models.local.json
 .codex/
 .claude/
 .workbuddy-ai/
+.aoci/
+aoci*.txt
 **/AGENTS.md
 **/CLAUDE.md

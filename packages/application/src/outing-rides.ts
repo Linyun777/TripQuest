@@ -98,7 +98,8 @@ export function rideSkeleton(draft: RequirementsDraft, userTexts: readonly strin
   if (!outing) return null;
   const startUnbound = draft.start?.status !== "bound";
   const origin = cityOf(draft.start) ?? (startUnbound && draft.city?.source === "located" ? draft.city.adcode : null);
-  const back = draft.end === null ? origin
+  const openEnd = draft.end === null && draft.endPolicy === "last";
+  const back = draft.end === null ? (openEnd ? null : origin)
     : draft.end.status === "bound" ? draft.end.city ?? null
       : draft.end.status === "current" ? origin
         : null;
@@ -131,8 +132,8 @@ export function rideSkeleton(draft: RequirementsDraft, userTexts: readonly strin
   const mode = modes.size === 1 ? [...modes][0]! : modes.size ? null : said;
   const driving = !!draft.travel?.allowed.includes("driving") || DRIVING_WORDS.test(userTexts.join("\n"));
   const legs: [string, string][] = [];
-  if (origin && back && ordered) {
-    const path = [origin, ...stops, back].filter((city, index, all) => index === 0 || city !== all[index - 1]);
+  if (origin && (back || openEnd) && ordered) {
+    const path = [origin, ...stops, ...(back ? [back] : [])].filter((city, index, all) => index === 0 || city !== all[index - 1]);
     for (let index = 1; index < path.length; index += 1) legs.push([path[index - 1]!, path[index]!]);
   }
   return { origin, stops, ordered, back, mode, said, driving, legs };

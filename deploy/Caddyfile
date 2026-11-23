@@ -1,0 +1,38 @@
+{
+  # HTTP error records can contain full request URLs. App failures use safe codes.
+  log default {
+    exclude http.log.error
+  }
+}
+
+{$SITE_HOST} {
+  request_body {
+    max_size 8MB
+  }
+
+  @maintenance file {
+    root /srv/state
+    try_files maintenance
+  }
+  handle @maintenance {
+    header Retry-After 60
+    respond "服务更新中，请稍后再试。" 503
+  }
+
+  handle {
+    @assets path /_next/static/*
+    encode @assets zstd gzip
+    reverse_proxy web:3000 {
+      flush_interval -1
+      header_up Host {host}
+      header_up X-Forwarded-Host {host}
+      header_up X-Forwarded-Proto {scheme}
+      header_up X-Forwarded-For {remote_host}
+      transport http {
+        dial_timeout 5s
+        read_timeout 650s
+        write_timeout 650s
+      }
+    }
+  }
+}

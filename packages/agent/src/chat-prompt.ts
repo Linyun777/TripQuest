@@ -79,7 +79,7 @@ Rules:
 - Brands and chains without a branch ("瑞幸", "星巴克", "海底捞") are interests in the user's words ("喝瑞幸"),
   never search_place visits: the planner finds the nearest branch. Search a place only when it is one specific
   place or branch ("某某商场里的海底捞").
-- If the user names no start or end, do not ask: set both (a short trip: only the start) to {"current":true} and say you will start from where they
+- If the user names no start or end, do not ask: set only start to {"current":true}, leave the end open at the last stop and say you will start from where they
   are (the card asks to use their location; if they decline you will ask later). Only search a start/end they name.
   Where they want to spend the day ("在西湖边逛一天", "在宽窄巷子一带") is an interest, not a start or end: still current.
   If city.location is "unknown" (no location allowed) and they named no start, still set start {"current":true} but end the
@@ -248,7 +248,7 @@ export const CHAT_OUTING_RULES = `Outing (V2.11): the user chose 出游 on the p
   addTransports: [{"date":"YYYY-MM-DD","mode":"train|flight|other","from":{"candidate":"c1"},"to":{"candidate":"c2"},"departAt":"08:00","arriveAt":"11:00","arriveDay":"same|next"}]
   ("date" is the day it runs; the code works out which day of the trip that is)
   updateTransports: [{"id":"t1","departAt":"15:00"}]   removeTransports: ["t1"]
-  start / end: where the trip starts and ends (end empty = back to the start).
+  start / end: where the trip starts and ends (end empty = finish at the last stop; an overnight hotel is a possible start the next morning).
   addVisits [{..., "day":2}] pins a place to a day (a fixed one needs "day" and its times).
   addInterests [{"text":"喝一杯","when":"evening","perDay":true}] for every day; {"text":"吃海鲜","cityName":"成都"} keeps it to a city;
   {"day":2} pins it to a day.

@@ -8,6 +8,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { connection } from "next/server";
+import { BrandMark } from "../../_ui/brand";
 import { GeneratedDayDetails } from "../generated-day-details";
 import { RealDayDetails } from "../../real-places/real-day-details";
 import { pageUser } from "../../auth/session";
@@ -67,7 +68,7 @@ export default async function JourneyPage({ params, searchParams }: JourneyPageP
       <div className="mx-auto max-w-3xl">
         <header className="mb-10 flex items-center justify-between gap-4">
           <Link href="/" className="flex items-center gap-3 rounded-xl focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#236d55]" aria-label="返回 TripQuest 首页">
-            <span className="grid size-10 place-items-center rounded-2xl bg-[#236d55] text-sm font-bold text-white">TQ</span>
+            <BrandMark size="lg" />
             <span className="font-semibold">TripQuest</span>
           </Link>
           <span className="rounded-full border border-[#dce8e0] bg-white px-3 py-1.5 text-xs font-medium text-[#476357]">当前版本 · v{journey.version}</span>

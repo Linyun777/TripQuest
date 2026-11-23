@@ -522,13 +522,20 @@ export class DayToolExecutor {
     // 把活动序列展开为起点 → 各站 → 终点的有向边；返程也算在路线额度与整天时间窗里。
     const placeIds = [this.problem.input.startPlaceId,
       ...action.orderedActivityIds.map((id) => this.activities.find((a) => a.activity.activityId === id)!.activity.placeId),
-      this.problem.input.endPlaceId];
+    ];
+    const last = placeIds.at(-1)!;
+    if (this.problem.input.endPolicy !== "last") placeIds.push(this.problem.input.endPlaceId);
+    // 开放终点复用本地同地证据，绝不请求最后一站到酒店的路线。
     const input = this.input();
     const edges = placeIds.slice(1).map((id, i) => {
       const from = this.places.find((p) => p.placeId === placeIds[i])!;
       const to = this.places.find((p) => p.placeId === id)!;
       return { from, to, key: this.cacheKey(from, to) };
     });
+    if (input.endPolicy === "last" || input.endPolicy === "prefer") {
+      const place = this.places.find((entry) => entry.placeId === last)!;
+      edges.push({ from: place, to: place, key: this.cacheKey(place, place) });
+    }
     // 先按缓存键去重待查询边。同地衔接单独标记假设，不发 API，也不把同名但快照不同的地点当成同地。
     const needed = new Map(edges.filter(({ from, to, key }) =>
       !this.routeCache.has(key) && !sameDayPlace(

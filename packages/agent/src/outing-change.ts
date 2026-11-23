@@ -1,3 +1,4 @@
+import { TRANSFER_BUFFER_MINUTES } from "@tripquest/application/transfer-day";
 import {
   applyDraftPatch,
   outingDays,
@@ -149,7 +150,12 @@ export async function resolveOutingChange(
     const arriveAt = request.transport.arriveAt ?? (request.transport.departAt && ride.departAt
       ? shift(ride.arriveAt, minutesOf(request.transport.departAt) - minutesOf(ride.departAt)) : ride.arriveAt);
     patch = { updateTransports: [{ id: ride.id, departAt, arriveAt }] };
-    affected = [ride.day, ...(ride.arriveDay === "next" && ride.day < days ? [ride.day + 1] : [])];
+    const overnights = ride.arriveDay === "next" || (departAt && arriveAt && arriveAt < departAt);
+    const buffer = TRANSFER_BUFFER_MINUTES[ride.mode];
+    const previousDay = [ride.departAt, departAt].some((time) => time && minutesOf(time) < buffer);
+    if (previousDay && ride.day > 1 && ride.day - 1 <= progress.today) return refuse("today", "进站时间涉及已经开始的一天，请先核对当天的安排。");
+    affected = [ride.day, ...(overnights && ride.day < days ? [ride.day + 1] : []),
+      ...(ride.day > 1 && previousDay ? [ride.day - 1] : [])];
     note = `第 ${ride.day} 天的交通改成 ${departAt ?? "?"} 出发`;
   } else {
     const night = request.lodging.night;

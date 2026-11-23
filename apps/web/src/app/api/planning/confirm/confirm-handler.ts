@@ -83,6 +83,7 @@ export function createConfirmDayHandler(options: {
         const mode = readRealPlaceMode(options.environment);
         if (!mode.enabled) return json(403, { status: "source_not_allowed" });
         const result = await traced({ trigger: "save", userId: user.id }, () => confirmRealDay({
+          cardVersion: payload.cardVersion,
           snapshot: payload.snapshot,
           draftFingerprint: payload.draftFingerprint,
           expiresAt: payload.expiresAt,

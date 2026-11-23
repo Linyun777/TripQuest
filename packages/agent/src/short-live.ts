@@ -10,8 +10,8 @@ export function createShortLiveModel(options: LiveModelOptions): CandidateDecisi
     ...transport,
     mode: "live",
     async decide(context, { signal }) {
-      await beforeRequest?.();
-      return transport.request(SHORT_SYSTEM_PROMPT, JSON.stringify(context), signal);
+      const receipt = await beforeRequest?.();
+      return transport.request(SHORT_SYSTEM_PROMPT, JSON.stringify(context), signal, receipt);
     },
   };
 }

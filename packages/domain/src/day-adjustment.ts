@@ -253,8 +253,8 @@ function directLeg(
   const to = place(input.endPlaceId);
   if (
     !from || !to || !Number.isSafeInteger(input.window.startsAt) ||
-    input.window.startsAt < 0 || input.window.startsAt >= input.window.endsAt ||
-    input.window.endsAt >= 1440
+    input.window.startsAt < 0 || input.window.startsAt > input.window.endsAt || input.window.startsAt >= 1440 ||
+    input.window.endsAt > 1440
   ) {
     return { issue: { code: "day_invalid_input", kind: "violation" } };
   }

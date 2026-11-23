@@ -8,6 +8,8 @@ if (existsSync(workspaceEnv)) process.loadEnvFile(workspaceEnv);
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
+  // Caddy compresses static assets; live NDJSON must leave Next without gzip buffering.
+  compress: false,
   // `pnpm dev:https` (phone testing) sets this to the computer's LAN addresses.
   ...(process.env.TRIPQUEST_DEV_ORIGINS ? { allowedDevOrigins: process.env.TRIPQUEST_DEV_ORIGINS.split(",") } : {}),
   // Next 16 logs Server Function arguments by default, including selected POI coordinates.

@@ -1,3 +1,4 @@
+import { modelEvent } from "../usage/usage";
 import "server-only";
 import { traced } from "../runs/runs";
 import { requireOwner } from "../auth/owner";
@@ -56,7 +57,7 @@ export function createTripNotesService(options: TripNotesOptions = {}) {
         config,
         profileId: env.AGENT_MODEL_PROFILE ?? "",
         environment: env,
-        beforeRequest: () => usage.reserve("model", "model", "trip-notes"),
+        beforeRequest: () => modelEvent(usage, "trip-notes"),
       }),
       places: meteredAmap({ key: mode.key, usage, purpose: "trip-notes", now }),
       web: meteredWebSearch({ key, usage, purpose: "trip-notes", now }),

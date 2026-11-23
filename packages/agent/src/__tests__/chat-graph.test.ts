@@ -306,15 +306,15 @@ describe("V2.1 chat intake turn", () => {
     expect("adjust" in result).toBe(false);
   });
 
-  it("points out once a day plan the rules can complete: today's date, back where it starts (V2.5)", async () => {
+  it("points out once a day plan the rules can complete: today's date, with no implicit return (V2.5)", async () => {
     const half = { action: "update_requirements", patch: { startsAt: "18:00", endsAt: "22:00", start: { current: true }, addInterests: [{ text: "喝点酒", when: "evening" }] } };
     const { model, seen } = scripted([
       { actions: [half, { action: "reply", text: "好" }] },
-      { actions: [{ action: "update_requirements", patch: { date: "2026-10-13", end: { current: true } } }, { action: "reply", text: "好，今晚从你那儿出发再回来。" }] },
+      { actions: [{ action: "update_requirements", patch: { date: "2026-10-13" } }, { action: "reply", text: "好，今晚从你那儿出发。" }] },
     ]);
     const result = await turn(model, places().search, "我晚上想去喝点酒");
-    expect(seen[1].feedback?.code).toMatch(/^day_incomplete: date is empty: .* today 2026-10-13; end is empty/);
-    expect(result).toMatchObject({ status: "completed", draft: { date: "2026-10-13", end: { status: "current" } } });
+    expect(seen[1].feedback?.code).toMatch(/^day_incomplete: date is empty: .* today 2026-10-13/);
+    expect(result).toMatchObject({ status: "completed", draft: { date: "2026-10-13", end: null } });
   });
 
   it("does not turn 'more to choose from' into more stops (V2.5)", async () => {

@@ -22,6 +22,11 @@ export function validateDayDraft(
     if (!issues.length) mismatch();
     return { verdict: "rejected", issues };
   }
+  const lastStop = schedule.activities.at(-1)?.placeId;
+  const end = schedule.legs.at(-1)?.toPlaceId;
+  if (input.endPolicy === "last" && end !== lastStop) mismatch();
+  const effectiveEnd = input.endPolicy === "last" || (input.endPolicy === "prefer" && end === lastStop)
+    ? lastStop : input.endPlaceId;
   let cursor = input.window.startsAt;
   let previous = input.startPlaceId;
   let totalWalking = 0;
@@ -29,7 +34,7 @@ export function validateDayDraft(
   for (let i = 0; i < schedule.legs.length; i += 1) {
     const item = schedule.activities[i];
     const activity = item && input.activities.find((a) => a.activityId === item.activityId)!;
-    const destination = activity?.placeId ?? input.endPlaceId;
+    const destination = activity?.placeId ?? effectiveEnd!;
     const leg = schedule.legs[i];
     // leaveLate 允许在上一站结束后多停留再出发，但不允许比上一站结束更早出发。
     // 独立校验必须理解这种空闲时间，否则会把合法晚出门方案误判成时间线断裂。
@@ -62,10 +67,14 @@ export function validateDayDraft(
     totalWalking += minutes;
     longestWalking = Math.max(longestWalking, minutes);
     if (activity) {
+      const open = item.openArrival === true;
+      if (open && (i !== schedule.activities.length - 1 || activity.role === "fixed" ||
+        activity.staySource !== "system_estimate" || item.startsAt >= 1440 ||
+        end !== lastStop || !["last", "prefer"].includes(input.endPolicy ?? ""))) mismatch(activity.activityId);
       if (
         item.placeId !== activity.placeId || item.arrivesAt !== arrival ||
         !Number.isSafeInteger(item.startsAt) || !Number.isSafeInteger(item.endsAt) ||
-        item.startsAt < arrival || item.endsAt - item.startsAt !== activity.stayMinutes ||
+        item.startsAt < arrival || item.endsAt - item.startsAt !== (open ? 0 : activity.stayMinutes) ||
         item.waitMinutes !== item.startsAt - arrival ||
         item.startsAt < input.window.startsAt || item.endsAt > input.window.endsAt
       ) mismatch(activity.activityId);
@@ -80,7 +89,7 @@ export function validateDayDraft(
       if (opening.status === "unknown" || opening.date !== input.date) {
         issues.push({ code: "day_opening_unknown", kind: "unknown", activityId: activity.activityId });
       } else if (opening.status === "closed" ||
-        !opening.windows.some((w) => item.startsAt >= w.startsAt && item.endsAt <= w.endsAt) ||
+        !opening.windows.some((w) => item.startsAt >= w.startsAt && item.startsAt < w.endsAt && item.endsAt <= w.endsAt) ||
         (opening.latestEntry !== undefined && item.startsAt > opening.latestEntry)) {
         issues.push({ code: "day_opening_conflict", kind: "violation", activityId: activity.activityId });
       }

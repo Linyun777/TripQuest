@@ -6,7 +6,7 @@
 export type PlaceChoice = { readonly placeId: string; readonly name: string; readonly hint?: string };
 
 export type CardPlace =
-  | { readonly status: "bound"; readonly placeId: string; readonly name: string; readonly nearby?: boolean }
+  | { readonly status: "bound"; readonly placeId: string; readonly name: string; readonly cityCode?: string; readonly nearby?: boolean }
   | { readonly status: "choose"; readonly mention: string; readonly choices: readonly PlaceChoice[] }
   | { readonly status: "current" }
   | { readonly status: "missing" };
@@ -53,6 +53,7 @@ export type WeatherChip = {
 export type OutingCardView = {
   /** V4.4：guessed 是日期是系统定的（用户没说哪天），卡片上写“暂定”。 */
   readonly dates: { readonly from: string; readonly to: string; readonly label: string; readonly days: number; readonly guessed?: true } | null;
+  readonly dayBoundaries?: Readonly<Record<string, { start: CardPlace; end: CardPlace; startsAt?: string; endsAt?: string; endPolicy?: "last" | "prefer" | "must" }>>;
   readonly startAt: string | null;
   readonly endAt: string | null;
   readonly dailyWindow: { readonly startsAt: string; readonly endsAt: string };
@@ -105,6 +106,9 @@ export type OutingCardView = {
 };
 
 export type RequirementsCardView = {
+  readonly boundaryChange?: boolean;
+  readonly cityCode?: string;
+  readonly endPolicy?: "last" | "prefer" | "must";
   /** V2.4: "short" = going now, picking each place from a few options; no way back unless asked. V2.11: "outing" = 出游. */
   readonly mode: "day" | "short" | "outing";
   readonly outing?: OutingCardView;
@@ -114,6 +118,8 @@ export type RequirementsCardView = {
   readonly dateLabel: string | null;
   /** V4.4：日期是系统定的（用户没说哪天），卡片上写“暂定”。 */
   readonly dateGuessed?: true;
+  readonly startsAt?: string | null;
+  readonly endsAt?: string | null;
   readonly window: { readonly startsAt: string; readonly endsAt: string } | null;
   readonly start: CardPlace;
   readonly end: CardPlace;
@@ -142,6 +148,7 @@ export type RequirementsCardView = {
 export type ProgressStep = { readonly key: string; readonly text: string; readonly state: "done" | "active" };
 
 export type PlanStop = {
+  readonly openArrival?: true;
   readonly key: string;
   readonly startsAt: string;
   readonly endsAt: string;
@@ -279,6 +286,7 @@ export type OutingDayPartView =
       readonly arriveAt: string;
       readonly nextDay: boolean;
       readonly estimated: boolean;
+      readonly estimateSide?: "arrival" | "departure";
     }
   | { readonly kind: "connect"; readonly from: string; readonly to: string; readonly departAt: string; readonly arriveAt: string };
 export type OutingDayView = {

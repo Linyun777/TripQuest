@@ -1,4 +1,5 @@
 import "server-only";
+import { permitsRealPlanning } from "../../deployment/environment";
 import type { PlanningAvailability, PlaceSource } from "./contracts";
 
 export type PlanningConfig =
@@ -25,7 +26,7 @@ export function readPlanningConfig(
   if (
     (source !== "fixture" && source !== "amap") ||
     !validSecret ||
-    (source === "amap" && (environment.NODE_ENV !== "development" || !key))
+    (source === "amap" && (!permitsRealPlanning(environment) || !key))
   ) {
     return {
       enabled: false,

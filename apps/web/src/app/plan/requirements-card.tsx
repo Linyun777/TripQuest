@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  ArrowRight,
   BedDouble,
   CalendarDays,
   Check,
@@ -14,8 +15,8 @@ import {
   Pencil,
   Plane,
   Plus,
-  Sparkles,
   Sun,
+  Tag,
   TrainFront,
   TriangleAlert,
   X,
@@ -27,6 +28,7 @@ import { Badge } from "../_ui/badge";
 import { Button } from "../_ui/button";
 import { Card, CardBody, CardFooter, CardHeader, CardTitle } from "../_ui/card";
 import { cn } from "../_ui/cn";
+import { BoundaryControls } from "./boundary-controls";
 import { MODE_STYLE } from "./plan-card";
 import type { CardPlace, CardVisit, OutingCardView, RequirementsCardView, TravelModeView, TravelView } from "./view-models";
 
@@ -37,7 +39,7 @@ const ROLE_LABEL = { optional: "想去", required: "必去", fixed: "固定" } a
 const ROLE_TONE = { optional: "neutral", required: "lake", fixed: "sun" } as const;
 
 /** 提交一个补丁，成功返回 null，失败返回可显示错误，卡片本身不自行假定保存成功。 */
-export type CardEdit = (patch: DraftPatch) => Promise<string | null>;
+export type CardEdit = (patch: DraftPatch, selections?: string[]) => Promise<string | null>;
 
 const SLOT_LABELS = [
   ["any", "不限时段"], ["morning", "上午"], ["noon", "中午"], ["afternoon", "下午"], ["dusk", "傍晚"], ["evening", "晚上"],
@@ -151,6 +153,7 @@ export function RequirementsCard({
       </CardHeader>
 
       <CardBody className={cn("space-y-4 transition-opacity", busy && "opacity-70")}>
+        {onEdit && <BoundaryControls card={card} onEdit={onEdit} />}
         {card.outing ? <OutingFacts outing={card.outing} /> : (
         <div className="grid grid-cols-2 gap-2.5">
           <Fact icon={<CalendarDays />} label="日期">
@@ -200,7 +203,7 @@ export function RequirementsCard({
               onChoose={(placeId) => onChoosePlace?.(visit.key, placeId)}
             />
           ))}
-          {card.mode === "short" && card.end.status === "missing" ? (
+          {(card.mode === "short" || card.endPolicy === "last") && card.end.status === "missing" ? (
             // 短途默认以最后一站为终点，只有用户要求返程才保留独立终点。
             <div className="flex gap-3">
               <span className="mt-0.5 grid size-8 shrink-0 place-items-center rounded-full bg-sunken text-ink-soft"><Flag className="size-4" /></span>
@@ -243,9 +246,9 @@ export function RequirementsCard({
               {card.interests.map((interest) => (
                 <span
                   key={interest.id}
-                  className="inline-flex items-center gap-1 rounded-full bg-lake-50 px-3 py-1 text-sm text-lake-700"
+                  className="inline-flex items-center gap-1 rounded-lg bg-lake-50 px-2.5 py-1 text-sm text-lake-700"
                 >
-                  <Sparkles className="size-3.5" />
+                  <Tag className="size-3.5" />
                   {interest.text}
                   {interest.day ? <span className="text-xs text-lake-600/80">第 {interest.day} 天</span> : null}
                   {interest.perDay ? <span className="text-xs text-lake-600/80">每天</span> : null}
@@ -340,8 +343,8 @@ export function RequirementsCard({
             </Button>
           ) : (
             <Button size="sm" disabled={!ready || starting || !onStart} onClick={onStart}>
-              <Sparkles />
               {starting ? "规划中…" : card.mode === "outing" ? "按天生成" : card.mode === "short" ? "开始挑地方" : "开始规划"}
+              <ArrowRight />
             </Button>
           )}
         </motion.div>
@@ -563,7 +566,7 @@ function OutingAllocation({
               <div className="mt-1 flex flex-wrap gap-1.5">
                 {entry.items.length ? entry.items.map((item) => (
                   <span key={item.target} className="inline-flex items-center gap-1 rounded-full bg-surface px-2.5 py-1 text-sm">
-                    {item.kind === "visit" ? <MapPin className="size-3.5 text-lake-600" /> : <Sparkles className="size-3.5 text-lake-600" />}
+                    {item.kind === "visit" ? <MapPin className="size-3.5 text-lake-600" /> : <Tag className="size-3.5 text-lake-600" />}
                     {item.name}
                     {onAllocate && days > 1 && (
                       <select

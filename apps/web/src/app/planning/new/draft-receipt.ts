@@ -18,6 +18,7 @@ export const DRAFT_RECEIPT_PAYLOAD_BYTES = 32 * 1024;
 export const DRAFT_RECEIPT_BYTES = 48 * 1024;
 export const draftReceiptPayloadSchema = z.strictObject({
   purpose: z.literal(DAY_CONFIRMATION_PROTOCOL),
+  cardVersion: z.strictObject({ conversationId: z.uuid(), fingerprint: z.string().regex(/^[a-f0-9]{64}$/) }).optional(),
   runId: z.uuid(),
   requirementsFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
   draftFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
@@ -124,7 +125,7 @@ export function verifyDraftReceipt(receipt: string, secret: string, now: number)
 export async function createDraftSaveOffer(
   snapshot: DayDraftConfirmationSnapshot | null,
   result: DayPlanningResult,
-  options: { environment?: NodeJS.ProcessEnv; now?: number } = {},
+  options: { environment?: NodeJS.ProcessEnv; now?: number; cardVersion?: { conversationId: string; fingerprint: string } } = {},
 ): Promise<DaySaveOffer> {
   const environment = options.environment ?? process.env;
   const config = readDraftSaveConfig(environment);
@@ -157,6 +158,7 @@ export async function createDraftSaveOffer(
     }
     payload = validatePayload({
       purpose: DAY_CONFIRMATION_PROTOCOL,
+      cardVersion: options.cardVersion,
       runId: result.runId,
       requirementsFingerprint: snapshot.problem.requirementsFingerprint,
       draftFingerprint,

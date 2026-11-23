@@ -38,7 +38,9 @@
     "rag": "pnpm --filter @tripquest/rag rag",
     "rag:ingest": "pnpm --filter @tripquest/rag rag ingest",
     "users": "pnpm --filter @tripquest/auth build && node packages/auth/dist/users.js",
-    "test:auth": "pnpm --filter @tripquest/auth test"
+    "test:auth": "pnpm --filter @tripquest/auth test",
+    "build:deploy": "pnpm build && pnpm --filter @tripquest/worker build && pnpm --filter @tripquest/auth build && pnpm --filter @tripquest/rag build && vite build --config deploy/vite.config.ts",
+    "deploy": "node scripts/deploy.mjs"
   },
   "devDependencies": {
     "eslint": "9.39.5",

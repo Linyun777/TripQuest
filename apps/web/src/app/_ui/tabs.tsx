@@ -9,7 +9,7 @@ export const Tabs = TabsPrimitive.Root;
 export function TabsList({ className, ...props }: ComponentProps<typeof TabsPrimitive.List>) {
   return (
     <TabsPrimitive.List
-      className={cn("inline-flex rounded-full bg-sunken p-1 text-sm", className)}
+      className={cn("glass-pill inline-flex rounded-full p-1 text-sm", className)}
       {...props}
     />
   );

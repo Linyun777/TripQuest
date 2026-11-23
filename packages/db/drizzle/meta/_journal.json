@@ -127,6 +127,27 @@
       "when": 1793507469844,
       "tag": "0017_jobs",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1795051680812,
+      "tag": "0018_model_receipts",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1795144932827,
+      "tag": "0019_site_usage_limits",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1795401600000,
+      "tag": "0020_user_feedback",
+      "breakpoints": true
     }
   ]
 }

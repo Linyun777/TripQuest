@@ -11,14 +11,15 @@ export function createNotesLiveModel(options: LiveModelOptions): NotesDecisionMo
     provider: transport.provider,
     model: transport.model,
     async decide(context, { signal }) {
+      let receipt;
       const content = JSON.stringify(context);
       if (new TextEncoder().encode(content).byteLength > NOTES_LIMITS.contextBytes) throw new DecisionModelError("invalid_output");
       try {
-        await beforeRequest?.();
+        receipt = await beforeRequest?.();
       } catch {
         throw new DecisionModelError("quota");
       }
-      return transport.request(NOTES_SYSTEM_PROMPT, content, signal);
+      return transport.request(NOTES_SYSTEM_PROMPT, content, signal, receipt);
     },
   };
 }

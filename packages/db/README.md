@@ -6,7 +6,7 @@ PostgreSQL / pgvector 的 Drizzle schema、SQL 迁移和仓库实现。业务数
 - `src/connection.ts`：连接生命周期；`src/repository.ts`：行程事务与版本保护。
 - `src/conversation-repository.ts`、`preference-repository.ts`：按用户隔离的对话和偏好。
 - `src/task-repository.ts`、`job-repository.ts`：Worker 任务租约和 Web 长任务登记。
-- `src/agent-runs.ts`、`usage.ts`：运行树及每日额度。
+- `src/agent-runs.ts`、`usage.ts`、`model-prices.ts`、`ops.ts`、`feedback.ts`：运行树、个人/全站并发额度、模型回执计价、站长查询与用户反馈（含迁移 `0018–0020`）。
 - `src/test-database-safety.ts`：测试库保护；`docker/init-test-database.sql`：新容器初始化测试库。
 
 在根目录运行 `pnpm db:up`、`pnpm db:migrate`。迁移使用 `DATABASE_URL`，不以 schema push 替代。改 schema 后用 `pnpm db:generate` 生成 SQL 并检查差异。

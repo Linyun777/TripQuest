@@ -49,7 +49,7 @@ export const REAL_DAY_SCHEMA = "stored-real-day.v1" as const;
 
 const uuid = z.uuid();
 const minute = z.number().int().min(0).max(1439);
-const window = z.strictObject({ startsAt: minute, endsAt: minute });
+const window = z.strictObject({ startsAt: minute, endsAt: z.number().int().min(1).max(1440) });
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
 
 export const realPlaceSchema = z.strictObject({
@@ -60,7 +60,7 @@ export const realPlaceSchema = z.strictObject({
 });
 export type RealPlace = z.infer<typeof realPlaceSchema>;
 
-export const storedRealDaySchema = z.strictObject({
+const realDayViewSchema = z.strictObject({
   schemaVersion: z.literal(REAL_DAY_SCHEMA),
   /** 每次确认调整追加计划版本，旧版继续可读，不覆盖用户当时确认的安排。 */
   planVersion: z.number().int().positive(),
@@ -72,6 +72,8 @@ export const storedRealDaySchema = z.strictObject({
     window,
     startPlaceId: uuid,
     endPlaceId: uuid,
+    endPolicy: z.enum(["last", "prefer", "must"]).optional(),
+    requestedEndPlaceId: uuid.optional(),
     bufferMinutes: z.union([z.literal(5), z.literal(10)]),
     pace: z.enum(["relaxed", "standard"]),
     interests: z.array(z.enum(PLANNING_INTERESTS)).max(4),
@@ -87,7 +89,8 @@ export const storedRealDaySchema = z.strictObject({
   activities: z.array(z.strictObject({
     record: storedActivityRecordSchema,
     startsAt: minute,
-    endsAt: minute,
+    endsAt: z.number().int().min(0).max(1440),
+    openArrival: z.literal(true).optional(),
     reservationId: uuid.optional(),
     /** 保存计划选定的入站方式，缺省步行；路线查询的时长、距离和费用不随之持久化。 */
     arrivalMode: travelModeSchema.optional(),
@@ -102,7 +105,8 @@ export const storedRealDaySchema = z.strictObject({
     placeId: uuid,
     status: z.enum(["completed", "skipped"]),
     startsAt: minute,
-    endsAt: minute,
+    endsAt: z.number().int().min(0).max(1440),
+    openArrival: z.literal(true).optional(),
   })).max(12).optional(),
   /** 第二版起保存父版本与简短修改原因，说明这份剩余计划从哪里演变而来。 */
   change: z.strictObject({
@@ -112,17 +116,53 @@ export const storedRealDaySchema = z.strictObject({
     origin: z.strictObject({ placeId: z.uuid(), startsAt: z.number().int().min(0).max(1439) }),
   }).optional(),
 });
-export type StoredRealDay = z.infer<typeof storedRealDaySchema>;
+export type StoredRealDay = z.infer<typeof realDayViewSchema>;
+
+const arrivalSchema = z.strictObject({
+  record: storedActivityRecordSchema,
+  at: minute,
+  arrivalMode: travelModeSchema.optional(),
+});
+const storedWithArrival = realDayViewSchema.extend({
+  activities: z.array(realDayViewSchema.shape.activities.element).max(5),
+  terminalArrival: arrivalSchema,
+}).transform(({ terminalArrival: arrival, activities, ...day }) => ({
+  ...day,
+  activities: [...activities, {
+    record: arrival.record, startsAt: arrival.at, endsAt: arrival.at,
+    openArrival: true as const, ...(arrival.arrivalMode ? { arrivalMode: arrival.arrivalMode } : {}),
+  }],
+}));
+export const storedRealDaySchema = z.union([realDayViewSchema, storedWithArrival]);
+
+export function serializeRealDay(details: StoredRealDay) {
+  const last = details.activities.at(-1);
+  if (!last?.openArrival) return details;
+  return {
+    ...details,
+    activities: details.activities.slice(0, -1),
+    terminalArrival: {
+      record: last.record, at: last.startsAt,
+      ...(last.arrivalMode ? { arrivalMode: last.arrivalMode } : {}),
+    },
+  };
+}
 
 /** V2.10：行程的主要城市；测试里手写、没有城市的行程按杭州。 */
 export function journeyCity(journey: Pick<StoredJourney, "city">): JourneyCity {
   return journey.city ?? { adcode: "330100", name: "杭州市" };
 }
 
+export interface CardVersion {
+  readonly conversationId: string;
+  readonly fingerprint: string;
+}
+
 export interface InitialRealDayDraft extends InitialJourneyDraft {
   readonly creationRunId: string;
   readonly creationIntentFingerprint: string;
   readonly realDay: StoredRealDay;
+  readonly cardVersion?: CardVersion;
 }
 export interface RealDayRepository {
   findRealDayCreation(runId: string): Promise<{ journeyId: string; intentFingerprint: string } | null>;
@@ -130,12 +170,13 @@ export interface RealDayRepository {
 }
 export type RealDaySaveOutcome =
   | { readonly status: "saved" | "already_saved"; readonly journeyId: string; readonly planVersion: 1 }
-  | { readonly status: "intent_conflict" };
+  | { readonly status: "intent_conflict" | "draft_changed" };
 
 function invariant(ok: unknown): asserts ok {
   if (!ok) throw new Error("Invalid stored real day");
 }
-const at = (date: string, minutes: number): ChinaDateTime =>
+export const realDayTime = (date: string, minutes: number): ChinaDateTime =>
+  minutes === 1440 ? toChinaDateTime(new Date(Date.parse(date + "T00:00:00+08:00") + 86_400_000)) :
   `${date}T${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}:00+08:00`;
 
 /** 真实与演示来源共同参与保存意图身份，同一 run 不能从演示保存重放成真实行程。 */
@@ -154,6 +195,7 @@ export function realDayIntentFingerprint(title: string, draftFingerprint: string
  * 业务安排变化需重新预览，保存时剔除实时详情，只留编号、名称和自有计划。
  */
 export async function confirmRealDay(options: {
+  cardVersion?: CardVersion;
   snapshot: DayDraftConfirmationSnapshot;
   draftFingerprint: string;
   title: string;
@@ -204,7 +246,7 @@ export async function confirmRealDay(options: {
   const journeyId = nextId("journey");
   const savedAt = toChinaDateTime(now);
   const { draft, problem } = snapshot;
-  const used = [draft.startPlace.placeId, draft.endPlace.placeId, ...draft.activities.map((item) => item.placeId)];
+  const used = [draft.startPlace.placeId, draft.endPlace.placeId, ...draft.activities.map((item) => item.placeId), problem.input.endPlaceId];
   const placeIds = new Map([...new Set(used)].map((draftId) => [draftId, nextId("place")]));
   const place = (draftId: string) => placeIds.get(draftId)!;
   // 显式白名单构造最小地点记录，不能展开 selection.place；那会把坐标、地址和分类一起持久化。
@@ -236,8 +278,8 @@ export async function confirmRealDay(options: {
         reservation: {
           id: reservationId,
           placeId,
-          startsAt: at(draft.date, item.startsAt),
-          endsAt: at(draft.date, item.endsAt),
+          startsAt: realDayTime(draft.date, item.startsAt),
+          endsAt: realDayTime(draft.date, item.endsAt),
           confirmation: { status: "unknown", source: { kind: "user_reported" }, recordedAt: savedAt },
         },
       });
@@ -258,14 +300,15 @@ export async function confirmRealDay(options: {
       }),
       startsAt: item.startsAt,
       endsAt: item.endsAt,
+      ...(item.openArrival ? { openArrival: true as const } : {}),
       ...(reservationId ? { reservationId } : {}),
       ...(arrivalMode && arrivalMode !== "walking" ? { arrivalMode } : {}),
     });
-    rows.push({
+    if (!item.openArrival) rows.push({
       id: activityId,
       placeId,
-      startsAt: at(draft.date, item.startsAt),
-      endsAt: at(draft.date, item.endsAt),
+      startsAt: realDayTime(draft.date, item.startsAt),
+      endsAt: realDayTime(draft.date, item.endsAt),
       priority: ["fixed", "required"].includes(item.role) ? "high" : "normal",
       locked: item.role === "fixed",
       ...(reservationId ? { reservationId } : {}),
@@ -282,6 +325,7 @@ export async function confirmRealDay(options: {
       window: draft.window,
       startPlaceId: place(draft.startPlace.placeId),
       endPlaceId: place(draft.endPlace.placeId),
+      ...(problem.input.endPolicy ? { endPolicy: problem.input.endPolicy, requestedEndPlaceId: place(problem.input.endPlaceId) } : {}),
       bufferMinutes: problem.input.bufferMinutes,
       pace: problem.requirements.pace,
       interests: [...problem.requirements.interests],
@@ -299,6 +343,7 @@ export async function confirmRealDay(options: {
   });
   // 同时准备关系表聚合和最小真实详情，先在内存校验一一对应，再交仓储以事务一次保存。
   const saved: InitialRealDayDraft = {
+    ...(options.cardVersion ? { cardVersion: options.cardVersion } : {}),
     journeyId,
     title,
     // V2.10：行程的城市来自规划时卡片的城市。
@@ -350,14 +395,24 @@ export function assertRealDayMatchesJourney(
   // 站点关联的兴趣必须存在于本版本；各轮规划的 i1 会重启，跨版时需重新映射。
   const interests = new Set<string>([...context.interests, ...(context.freeInterests ?? []).map((item) => item.id)]);
   invariant(activities.every((item) => !item.record.interest || interests.has(item.record.interest)));
+  const timedCount = activities.filter((item) => !item.openArrival).length;
+  invariant(!context.requestedEndPlaceId || name(context.requestedEndPlaceId));
+  invariant(new Set(activities.map((item) => item.record.activity.activityId)).size === activities.length);
   invariant(
-    plan.activities.length === activities.length &&
-    stored.activitySnapshots.length === activities.length,
+    plan.activities.length === timedCount &&
+    stored.activitySnapshots.length === timedCount,
   );
   let cursor = context.window.startsAt;
   let fixedCount = 0;
   for (const [position, item] of activities.entries()) {
     const { activity } = item.record;
+    if (item.openArrival) {
+      invariant(position === activities.length - 1 && activity.placeId === context.endPlaceId &&
+        (context.endPolicy === "last" || context.endPolicy === "prefer") &&
+        activity.staySource === "system_estimate" && activity.role !== "fixed" && !item.reservationId &&
+        item.startsAt === item.endsAt && item.startsAt >= cursor && item.startsAt <= context.window.endsAt);
+      continue;
+    }
     const row = plan.activities[position];
     const label = stored.activitySnapshots[position];
     invariant(
@@ -366,8 +421,8 @@ export function assertRealDayMatchesJourney(
       row.id === activity.activityId &&
       row.placeId === activity.placeId &&
       name(activity.placeId) !== undefined &&
-      row.startsAt === at(context.date, item.startsAt) &&
-      row.endsAt === at(context.date, item.endsAt) &&
+      row.startsAt === realDayTime(context.date, item.startsAt) &&
+      row.endsAt === realDayTime(context.date, item.endsAt) &&
       row.locked === (activity.role === "fixed") &&
       row.priority === (["required", "fixed"].includes(activity.role) ? "high" : "normal") &&
       row.reservationId === item.reservationId &&
@@ -468,7 +523,9 @@ export async function hydrateRealDay(
 
   // 重新打开只核对已保存时刻能否衔接，不把最新路线算成一份替代计划。
   // 所有活动都钉在原时段；如果不再可达，页面应提示调整，由用户确认新版本。
-  const activities = details.activities.map((item) => item.record.activity);
+  const terminal = details.activities.at(-1);
+  const timed = details.activities.filter((item) => !item.openArrival);
+  const activities = timed.map((item) => item.record.activity);
   const input: DayReplanInput = {
     date: context.date,
     timeZone: context.timeZone,
@@ -483,10 +540,10 @@ export async function hydrateRealDay(
     resumePlaceId: context.startPlaceId,
     resumesAt: context.window.startsAt,
     endPlaceId: context.endPlaceId,
-    endsAt: context.window.endsAt,
+    endsAt: terminal?.openArrival ? terminal.startsAt : context.window.endsAt,
     activities,
     // 把原活动钉在已保存时段，只检查原方式是否仍来得及，不允许重排器替用户悄悄改时间。
-    frozen: details.activities.map((item) => ({
+    frozen: timed.map((item) => ({
       activityId: item.record.activity.activityId,
       startsAt: item.startsAt,
       endsAt: item.endsAt,

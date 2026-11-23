@@ -446,6 +446,13 @@ export class AmapMobilityProvider implements MobilityProvider, PlaceLookupProvid
    * 区县、乡镇、景点名都不算城市（“乌镇”“西湖区”交给地点搜索）。
    */
   async resolveCity(name: string, options?: ProviderCallOptions): Promise<ProviderResult<CityRef>> {
+    const city = await this.resolveMapCity(name, options);
+    if (city.status !== "ok") return city;
+    return { ...city, data: { adcode: city.data.adcode, name: city.data.name } };
+  }
+
+  /** The picker uses the transient viewport, while stored city references only include name and code. */
+  async resolveMapCity(name: string, options?: ProviderCallOptions): Promise<ProviderResult<CityRef & { center?: GeoPoint }>> {
     try {
       if (!text(name, 20)) fail("invalid_request");
       const found = await this.#district(name.trim(), options);
@@ -454,7 +461,7 @@ export class AmapMobilityProvider implements MobilityProvider, PlaceLookupProvid
         (level === "district" && found.adcode.slice(2, 4) === "90"));
       if (!found || !isCity) fail("invalid_request");
       if (text(found.citycode, 10)) this.#cityCodes.set(cityAdcodeOf(found.adcode), found.citycode);
-      return { status: "ok", data: { adcode: cityAdcodeOf(found.adcode), name: found.name }, evidence: this.#evidence() };
+      return { status: "ok", data: { adcode: cityAdcodeOf(found.adcode), name: found.name, center: found.center }, evidence: this.#evidence() };
     } catch (error) {
       if (!(error instanceof RequestFailure)) throw error;
       return { status: "failure", failure: error.detail, evidence: this.#evidence() };
@@ -468,7 +475,7 @@ export class AmapMobilityProvider implements MobilityProvider, PlaceLookupProvid
     const first: unknown = body.districts[0];
     if (first === undefined) return null;
     if (!record(first) || !isAdcode(first.adcode) || !text(first.name, 40) || typeof first.level !== "string") fail("malformed_response");
-    return { adcode: first.adcode, name: first.name.trim(), level: first.level, citycode: first.citycode };
+    return { adcode: first.adcode, name: first.name.trim(), level: first.level, citycode: first.citycode, center: point(first.center) };
   }
 
   /** 公交的 city1/city2：城市编码换成高德城市代码，每个城市只查一次。 */
@@ -484,19 +491,23 @@ export class AmapMobilityProvider implements MobilityProvider, PlaceLookupProvid
 
   /** 原始设备坐标先转高德坐标，再解析成带 ID 的最近地点；只返回地点，不回显精确设备点。 */
   async nearestPlace(
-    devicePoint: { readonly longitude: number; readonly latitude: number },
+    devicePoint: { readonly longitude: number; readonly latitude: number; readonly coordinateSystem?: "gcj02" },
     options?: ProviderCallOptions,
   ): Promise<ProviderResult<NearestPlaceData>> {
     try {
       const valid = (value: number, limit: number) => typeof value === "number" && Number.isFinite(value) && Math.abs(value) <= limit;
       if (!record(devicePoint) || !valid(devicePoint.longitude, 180) || !valid(devicePoint.latitude, 90)) fail("invalid_request");
-      const converted = await this.#request("/v3/assistant/coordinate/convert", {
-        locations: `${devicePoint.longitude.toFixed(6)},${devicePoint.latitude.toFixed(6)}`,
-        coordsys: "gps",
-      }, options);
-      const location = point(converted.locations);
-      if (!location) fail("malformed_response");
-      if (this.#options.stepGapMs) await new Promise((resolve) => setTimeout(resolve, this.#options.stepGapMs));
+      let location = devicePoint;
+      if (devicePoint.coordinateSystem !== "gcj02") {
+        const converted = await this.#request("/v3/assistant/coordinate/convert", {
+          locations: `${devicePoint.longitude.toFixed(6)},${devicePoint.latitude.toFixed(6)}`,
+          coordsys: "gps",
+        }, options);
+        const gcj = point(converted.locations);
+        if (!gcj) fail("malformed_response");
+        location = gcj;
+        if (this.#options.stepGapMs) await new Promise((resolve) => setTimeout(resolve, this.#options.stepGapMs));
+      }
       const body = await this.#request("/v3/geocode/regeo", {
         location: `${location.longitude.toFixed(6)},${location.latitude.toFixed(6)}`,
         extensions: "all",

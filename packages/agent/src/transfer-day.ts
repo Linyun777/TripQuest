@@ -85,6 +85,15 @@ export async function planTransferDay(
   for (const interest of split.unplaced.interests) notes.push(`“${interest.text}”这天放不下，没有排。`);
 
   const parts: TransferDayPart[] = [];
+  if (input.arrival) {
+    notes.unshift(`${clock(input.arrival.at)} 到达${input.arrival.station.place.name}（前一日车次）。`);
+    if (input.arrival.station.place.ref.externalId !== input.start.place.ref.externalId) {
+      const connection = await connect({ ...split.segments[0], index: 0, start: input.arrival.station, end: input.start,
+        startsAt: input.arrival.at, endsAt: split.segments[0].startsAt }, { ...input, explicitStart: true }, dependencies, options.signal, notes);
+      if ("status" in connection) return connection.status === "failed" ? connection : { ...connection, notes };
+      parts.push(connection);
+    }
+  }
   for (const segment of split.segments) {
     const timed = split.transfers[segment.index - 1];
     if (timed) {
@@ -99,14 +108,27 @@ export async function planTransferDay(
         estimated: timed.estimated,
         bufferMinutes: timed.bufferMinutes,
       });
+      if (segment.index === 1 && input.postRideStart && timed.transfer.to.place.ref.externalId !== segment.start.place.ref.externalId) {
+        const connection = await connect({
+          ...segment, start: timed.transfer.to, end: segment.start, startsAt: timed.arriveAt, endsAt: segment.startsAt,
+        }, { ...input, explicitStart: true }, dependencies, options.signal, notes);
+        if ("status" in connection) return connection.status === "failed" ? connection : { ...connection, notes };
+        parts.push(connection);
+      }
     }
     // 中间不排东西的一段：起止是同一个地点（起点就是车站，或终点就是到达站）时人已经在那里；只是去赶车时
     // 出门时间跟着车走（connect 里倒推）。都不按每天的出门时间算迟到。
     const samePlace = segment.start.place.ref.externalId === segment.end.place.ref.externalId;
     const toRide = input.transfers.some((ride) => ride.from.place.ref.externalId === segment.end.place.ref.externalId);
     const nothingToPlace = !segment.visits.length && !segment.interests.length;
+    if (input.explicitStart && toRide && segment.startsAt > segment.endsAt) return { status: "no_plan", segment: segment.index, reason: "late", notes, explanation: "按选定时间出发赶不上进站，请调整出发时间或车次。" };
     if (segment.endsAt < segment.startsAt && !((samePlace || toRide) && nothingToPlace)) {
       return { status: "no_plan", segment: segment.index, reason: "late", notes, explanation: "赶不上这段交通：出发前的时间不够进站。" };
+    }
+    const endPolicy = segment.index === input.transfers.length ? input.endPolicy : undefined;
+    if (nothingToPlace && endPolicy === "last") {
+      if (parts.length === 0 && !input.transfers.length) return { status: "no_plan", segment: segment.index, reason: "no_suitable_places", explanation: "当天没有可安排的游玩地点。", notes };
+      continue;
     }
     let planned = segment.visits.length || segment.interests.length
       ? await planSegment(segment, input, dependencies, options)
@@ -115,6 +137,10 @@ export async function planTransferDay(
     if ("status" in planned && planned.status === "no_plan" && !segment.visits.length &&
       (planned.reason === "constraints_not_met" || planned.reason === "no_suitable_places")) {
       notes.push(`${segment.interests.map((interest) => `“${interest.text}”`).join("、")}这段时间排不开，没有排。`);
+      if (endPolicy === "last") {
+        if (!parts.length && !input.transfers.length) return { ...planned, notes };
+        continue;
+      }
       planned = await connect(segment, input, dependencies, options.signal, notes);
     }
     if ("status" in planned) return planned.status === "failed" ? planned : { ...planned, notes };
@@ -129,7 +155,9 @@ export async function planTransferDay(
     });
   }
   notes.push(...idleNotes(parts, split));
-  return { status: "draft", parts, notes, issues: checkTransferDay(parts, split), split };
+  const issues = checkTransferDay(parts, split);
+  if (input.endPolicy && issues.length) return { status: "no_plan", segment: -1, reason: "late", notes, explanation: "所选出发时间与车次衔接冲突，请调整当天时段或车次。" };
+  return { status: "draft", parts, notes, issues, split };
 }
 
 type SegmentOutcome =
@@ -154,6 +182,7 @@ async function planSegment(
     window: { startsAt: clock(segment.startsAt), endsAt: clock(segment.endsAt) },
     startPlace: segment.start,
     endPlace: segment.end,
+    ...(segment.index === input.transfers.length && input.endPolicy ? {endPolicy: input.endPolicy} : {}),
     interests: [],
     // 兴趣的城市只用来分段，交给一日规划器时不带。
     ...(segment.interests.length ? {
@@ -226,7 +255,7 @@ async function connect(
   // 只是去赶车的一段（中间不排东西）：按每天出门的时间赶不上时，倒推出门时间（不早于 5:30），照实写出来。
   // 车次是用户定的，出门时间跟着车走（“10 点的高铁”9 点出门来不及时，8:45 出门）。
   const rideNext = !!input.transfers.find((ride) => same(ride.from, segment.end));
-  if (arrivesAt > segment.endsAt && rideNext && segment.endsAt - minutes >= EARLIEST_LEAVE_MINUTES) {
+  if (!input.explicitStart && arrivesAt > segment.endsAt && rideNext && segment.endsAt - minutes >= EARLIEST_LEAVE_MINUTES) {
     const departsAt = segment.endsAt - minutes;
     notes.push(`要 ${clock(departsAt)} 从${segment.start.place.name}出发，才赶得上车。`);
     return {

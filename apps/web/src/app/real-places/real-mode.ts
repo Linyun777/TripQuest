@@ -1,8 +1,10 @@
 import "server-only";
+import { permitsRealPlanning } from "../deployment/environment";
 
 /**
  * S5.5 (D-046): saving and reopening days with real Amap places is a local, personal,
- * opt-in development mode. All three switches and a key are required; otherwise real
+ * opt-in mode, also available in explicitly configured invited deployments. Switches
+ * and a key are required; otherwise real
  * days stay unreadable and no Amap request is sent.
  */
 export function readRealPlaceMode(environment: NodeJS.ProcessEnv = process.env):
@@ -10,7 +12,7 @@ export function readRealPlaceMode(environment: NodeJS.ProcessEnv = process.env):
   | { enabled: false } {
   const key = environment.AMAP_WEB_SERVICE_KEY?.trim() ?? "";
   const enabled =
-    environment.NODE_ENV === "development" &&
+    permitsRealPlanning(environment) &&
     environment.PLANNING_PLACE_SOURCE === "amap" &&
     environment.REAL_PLACE_SAVE_ENABLED === "true" &&
     key.length > 0;

@@ -24,6 +24,20 @@ const run = (overrides: Partial<Parameters<typeof planTransferDay>[0]> = {}) => 
 }, { runner: createDayPlanningRunner({ provider, model: createDayScriptedModel(), now }), provider, now }, { signal: new AbortController().signal });
 
 describe("V2.11 planning a day around a fixed ride", () => {
+  it("connects an early train to the chosen morning start and rejects an unreachable start", async () => {
+    const trip = {
+      start: selection(0), end: selection(4), visits: [], endPolicy: "last" as const,
+      window: { startsAt: "00:00", endsAt: "23:30" }, postRideStart: selection(2),
+      transfers: [{ mode: "train" as const, from: selection(0), to: selection(1), departAt: "00:15", arriveAt: "07:10", arriveDay: "same" as const }],
+    };
+    const day = await run({ ...trip, playFrom: 9 * 60 });
+    expect(day.status).toBe("draft");
+    if (day.status === "draft") expect(day.parts).toContainEqual(expect.objectContaining({
+      kind: "connect", from: selection(1).place.name, to: selection(2).place.name, departsAt: 430,
+    }));
+    expect((await run({ ...trip, playFrom: 430 })).status).toBe("no_plan");
+  });
+
   it("plans the part before the ride with the day planner, keeps the ride's times, then goes on to the end", async () => {
     const result = await run();
     if (result.status !== "draft") throw new Error(JSON.stringify(result));

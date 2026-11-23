@@ -50,7 +50,7 @@ export const GET = withUser<{ params: Promise<{ tripId: string }> }>({}, async (
         const ride = trip.details.transports[part.transport];
         return ride ? [{
           kind: "transfer" as const, mode: ride.mode, from: ride.from.name, to: ride.to.name,
-          departAt: ride.departAt, arriveAt: ride.arriveAt, nextDay: ride.arriveDay === "next", estimated: ride.estimated,
+          departAt: ride.departAt, arriveAt: ride.arriveAt, nextDay: ride.arriveDay === "next", estimated: ride.estimated, estimateSide: ride.estimateSide,
         }] : [];
       }),
     }));

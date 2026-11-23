@@ -1,3 +1,4 @@
+import { withRepair } from "./runs";
 import { z } from "zod";
 import type { ModelReply } from "./contracts";
 import { DecisionModelError } from "./contracts";
@@ -251,7 +252,9 @@ export async function judgeOuting(request: JudgeRequest, input: JudgeInput, sign
   for (let attempt = 0; attempt < 2; attempt += 1) {
     let reply: ModelReply;
     try {
-      reply = await request(JUDGE_SYSTEM_PROMPT, feedback ? `${content}\n\nYour last answer was not valid: ${feedback}. Answer with the JSON object only.` : content, signal);
+      reply = await withRepair("assessment", feedback ? "invalid_output" : null, () =>
+        request(JUDGE_SYSTEM_PROMPT, feedback ? `${content}\n\nYour last answer was not valid: ${feedback}. Answer with the JSON object only.` : content, signal),
+      );
     } catch (error) {
       if (error instanceof DecisionModelError && error.code === "invalid_output" && attempt === 0) {
         feedback = "not a complete JSON object";

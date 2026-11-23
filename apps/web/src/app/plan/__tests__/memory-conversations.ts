@@ -43,7 +43,7 @@ export class MemoryConversations implements ConversationRepository {
   async appendTurn(input: Parameters<ConversationRepository["appendTurn"]>[0]) {
     const conversation = this.conversations.get(input.conversationId);
     if (!conversation) return { status: "not_found" as const };
-    if (conversation.messageCount !== input.expectedCount) return { status: "conflict" as const };
+    if (conversation.messageCount !== input.expectedCount || (input.expectedDraftFingerprint && fingerprint(conversation.draft) !== input.expectedDraftFingerprint)) return { status: "conflict" as const };
     const list = this.messages.get(input.conversationId)!;
     for (const message of input.messages) {
       // Same validation as the database repository: provider details are refused.

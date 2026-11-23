@@ -25,7 +25,7 @@ import {
   type PlanningRequirements,
   type TravelPreference,
 } from "./planning-requirements";
-import { REAL_DAY_SCHEMA, storedRealDaySchema, type RealPlace, type StoredRealDay } from "./real-day";
+import { REAL_DAY_SCHEMA, realDayTime, storedRealDaySchema, type RealPlace, type StoredRealDay } from "./real-day";
 import { createCheckedIdFactory, toChinaDateTime } from "./runtime-values";
 
 /**
@@ -59,7 +59,6 @@ const toStored = (value: string): ChinaDateTime => `${value.slice(0, 16)}:00+08:
 const validClock = (value: string) => Number(value.slice(11, 13)) < 24 && Number(value.slice(14, 16)) < 60;
 const minutes = (time: string) => Number(time.slice(0, 2)) * 60 + Number(time.slice(3, 5));
 const clock = (value: number) => `${String(Math.floor(value / 60)).padStart(2, "0")}:${String(value % 60).padStart(2, "0")}`;
-const at = (date: string, value: number): ChinaDateTime => `${date}T${clock(value)}:00+08:00`;
 
 /** 当前计划与截至此刻的累计完成/跳过状态，包含此前版本已经归档的历史。 */
 export function realDayProgress(stored: StoredJourney): { completed: readonly string[]; skipped: readonly string[] } {
@@ -221,7 +220,7 @@ export function prepareAdjustment(options: {
   const start = startPlaceId ? options.live.get(startPlaceId)! : options.here!;
   // 原短途若无返程，删站后终点跟随最后保留站，不强制回到旧最后站。
   const endsAtLastStop = details.activities.at(-1)?.record.activity.placeId === context.endPlaceId;
-  const endPlaceId = endsAtLastStop ? remaining.at(-1)?.record.activity.placeId ?? startPlaceId : context.endPlaceId;
+  const endPlaceId = context.endPolicy && context.endPolicy !== "last" ? context.requestedEndPlaceId ?? context.endPlaceId : endsAtLastStop ? remaining.at(-1)?.record.activity.placeId ?? startPlaceId : context.endPlaceId;
   const end = endPlaceId ? options.live.get(endPlaceId)! : start;
 
   // 没被用户完成、跳过或替换的站，在本轮规划里临时升为 required，防止模型为新兴趣腾位时删站。
@@ -233,7 +232,7 @@ export function prepareAdjustment(options: {
     keep.set(place.place.ref.externalId, activity.activityId);
     return activity.role === "fixed"
       ? { place, role: "fixed" as const, startsAt: clock(activity.fixed!.startsAt), endsAt: clock(activity.fixed!.endsAt) }
-      : { place, role: "required" as const, stayMinutes: activity.stayMinutes };
+      : { place, role: "required" as const, stayMinutes: activity.stayMinutes, ...(context.endPolicy && activity.staySource === "system_estimate" ? { staySource: "estimate" as const } : {}) };
   });
   const asked = {
     schemaVersion: "planning-requirements.v1",
@@ -246,6 +245,7 @@ export function prepareAdjustment(options: {
     window: { startsAt: clock(resumeAt), endsAt: clock(endsAt) },
     startPlace: start,
     endPlace: end,
+    ...(context.endPolicy ? { endPolicy: context.endPolicy } : {}),
     interests: [],
     ...(interests.length ? { freeInterests: interests.map((item, index) => ({ id: `i${index + 1}`, ...item })) } : {}),
     pace: context.pace,
@@ -448,14 +448,15 @@ export function buildAdjustedDay(options: {
       }),
       startsAt: item.startsAt,
       endsAt: item.endsAt,
+      ...(item.openArrival ? { openArrival: true as const } : {}),
       ...(earlier?.reservationId ? { reservationId: earlier.reservationId } : {}),
       ...(arrivalMode && arrivalMode !== "walking" ? { arrivalMode } : {}),
     });
-    rows.push({
+    if (!item.openArrival) rows.push({
       id: activityId,
       placeId,
-      startsAt: at(draft.date, item.startsAt),
-      endsAt: at(draft.date, item.endsAt),
+      startsAt: realDayTime(draft.date, item.startsAt),
+      endsAt: realDayTime(draft.date, item.endsAt),
       priority: ["fixed", "required"].includes(role) ? "high" : "normal",
       locked: role === "fixed",
       ...(earlier?.reservationId ? { reservationId: earlier.reservationId } : {}),
@@ -481,6 +482,7 @@ export function buildAdjustedDay(options: {
         status: prepared.completed.includes(item.record.activity.activityId) ? "completed" as const : "skipped" as const,
         startsAt: item.startsAt,
         endsAt: item.endsAt,
+      ...(item.openArrival ? { openArrival: true as const } : {}),
       })),
   ];
   const startPlaceId = prepared.startPlaceId ?? placeFor(draft.startPlace.placeId);

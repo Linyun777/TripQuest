@@ -30,6 +30,7 @@ export function inspectDayOrder(
 ): DayIssue[] {
   const issues: DayIssue[] = [];
   const minute = (n: number) => Number.isSafeInteger(n) && n >= 0 && n < 1440;
+  const deadline = (n: number) => minute(n) || n === 1440;
   const dateMs = Date.parse(`${input.date}T00:00:00Z`);
   // Date.parse 会归一化部分无效日历日期，因此还要格式回写比对，防止“2 月 30 日”被悄悄改成三月。
   const validDate = /^\d{4}-\d{2}-\d{2}$/.test(input.date) && Number.isFinite(dateMs) &&
@@ -38,7 +39,7 @@ export function inspectDayOrder(
   const placeIds = new Set(input.places.map((p) => p.placeId));
   if (
     !validDate || input.timeZone !== "Asia/Shanghai" ||
-    !minute(input.window.startsAt) || !minute(input.window.endsAt) ||
+    !minute(input.window.startsAt) || !deadline(input.window.endsAt) ||
     input.window.startsAt >= input.window.endsAt ||
     ![5, 10].includes(input.bufferMinutes) || !Number.isFinite(input.nowMs) ||
     placeIds.size !== input.places.length ||
@@ -48,11 +49,11 @@ export function inspectDayOrder(
       !placeIds.has(a.placeId) || !Number.isSafeInteger(a.stayMinutes) ||
       a.stayMinutes <= 0 ||
       (a.role === "fixed" && (!a.fixed || !minute(a.fixed.startsAt) ||
-        !minute(a.fixed.endsAt) || a.fixed.endsAt - a.fixed.startsAt !== a.stayMinutes)) ||
+        !deadline(a.fixed.endsAt) || a.fixed.endsAt - a.fixed.startsAt !== a.stayMinutes)) ||
       (a.role !== "fixed" && a.fixed !== undefined) ||
       (a.opening.status === "known" && a.opening.windows.some((w) =>
-        !minute(w.startsAt) || !minute(w.endsAt) || w.startsAt >= w.endsAt)) ||
-      (a.within !== undefined && (!minute(a.within.startsAt) || !minute(a.within.endsAt) ||
+        !minute(w.startsAt) || !deadline(w.endsAt) || w.startsAt >= w.endsAt)) ||
+      (a.within !== undefined && (!minute(a.within.startsAt) || !deadline(a.within.endsAt) ||
         a.within.startsAt >= a.within.endsAt)),
     )
   ) {
@@ -119,7 +120,7 @@ export function dayRouteIssue(
 }
 
 /** 在给定顺序下寻找最早可容纳完整停留的营业窗口；固定事项使用原时刻，不被提前或顺延。 */
-function activityStart(activity: DayActivity, reached: number, date: string): number | null {
+function activityStart(activity: DayActivity, reached: number, date: string, stay: number): number | null {
   if (activity.fixed) return activity.fixed.startsAt;
   // 兴趣时段的开始是下界；提前到达也要等待，不能为了排得下把晚间兴趣挪到下午。
   const arrival = Math.max(reached, activity.within?.startsAt ?? reached);
@@ -130,7 +131,7 @@ function activityStart(activity: DayActivity, reached: number, date: string): nu
   // 不是“到达时开门”就够：开始时刻不能晚于最晚入场，整个停留还必须在某一个营业区间内完成。
   for (const window of windows) {
     const start = Math.max(arrival, window.startsAt);
-    if (start + activity.stayMinutes <= window.endsAt &&
+    if (start < window.endsAt && start + stay <= window.endsAt &&
       (opening.latestEntry === undefined || start <= opening.latestEntry)) return start;
   }
   return null;
@@ -144,6 +145,23 @@ export function scheduleDay(
   input: DayPlanningInput,
   orderedActivityIds: readonly string[],
   routes: readonly DayRoute[],
+): DaySchedulingResult {
+  if (input.endPolicy === "last" || input.endPolicy === "prefer") {
+    if (input.endPolicy === "prefer") {
+      const withReturn = scheduleDay({ ...input, endPolicy: "must" }, orderedActivityIds, routes);
+      if (withReturn.status === "scheduled") return withReturn;
+    }
+    const last = input.activities.find((item) => item.activityId === orderedActivityIds.at(-1));
+    if (last) return scheduleOrdered({ ...input, endPlaceId: last.placeId }, orderedActivityIds, routes, last.staySource === "system_estimate" && !last.fixed ? last.activityId : undefined);
+  }
+  return scheduleOrdered(input, orderedActivityIds, routes);
+}
+
+function scheduleOrdered(
+  input: DayPlanningInput,
+  orderedActivityIds: readonly string[],
+  routes: readonly DayRoute[],
+  terminalId?: string,
 ): DaySchedulingResult {
   const invalid = inspectDayOrder(input, orderedActivityIds);
   if (invalid.length) return { status: "not_scheduled", issues: invalid };
@@ -179,16 +197,19 @@ export function scheduleDay(
       cursor = arrival;
       break;
     }
-    const start = activityStart(activity, arrival, input.date);
+    const openArrival = activity.activityId === terminalId;
+    const stay = openArrival ? 0 : activity.stayMinutes;
+    const start = activityStart(activity, arrival, input.date, stay);
     if (start === null) {
       return { status: "not_scheduled", issues: [{
         code: "day_opening_conflict", kind: "violation", activityId: activity.activityId,
       }] };
     }
-    if (activity.within && start + activity.stayMinutes > activity.within.endsAt) {
+    if (openArrival && start >= 1440) return { status: "not_scheduled", issues: [{ code: "day_window_exceeded", kind: "violation", expected: 1439, actual: start }] };
+    if (activity.within && start + stay > activity.within.endsAt) {
       return { status: "not_scheduled", issues: [{
         code: "day_time_of_day", kind: "violation", activityId: activity.activityId,
-        expected: activity.within.endsAt, actual: start + activity.stayMinutes,
+        expected: activity.within.endsAt, actual: start + stay,
       }] };
     }
     // 预约开始时刻不能移动；哪怕只晚一分钟，也返回冲突而不是把预约顺延到可到达时间。
@@ -203,10 +224,11 @@ export function scheduleDay(
       placeId: activity.placeId,
       arrivesAt: arrival,
       startsAt: start,
-      endsAt: start + activity.stayMinutes,
+      endsAt: start + stay,
+      ...(openArrival ? { openArrival: true as const } : {}),
       waitMinutes: start - arrival,
     });
-    cursor = start + activity.stayMinutes;
+    cursor = start + stay;
     previous = destination;
   }
   // 最后 cursor 已包含去终点的交通，不能只检查最后一个活动结束就宣称整天排得下。

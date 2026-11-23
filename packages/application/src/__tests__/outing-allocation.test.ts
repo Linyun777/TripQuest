@@ -203,3 +203,18 @@ describe("V4.2 a fixed booking early in the day", () => {
     expect(dawn[1]!.startsAt).toBe(6 * 60);
   });
 });
+
+it("separates evening endpoint, next morning hotel, and a train boarding deadline on the previous date", () => {
+  const input = base({ endPolicy: "last", dailyWindow: { startsAt: "09:00", endsAt: "24:00" },
+    boundaries: { "2026-10-17": { endPolicy: "last", endsAt: "24:00" } } });
+  const ordinary = outingFrames(input);
+  expect(ordinary[0]).toMatchObject({ endPolicy: "last", endsAt: 1440 });
+  expect(ordinary[1].start).toEqual(hotel);
+  const ride = { day: 2, mode: "train" as const, from: east, to: south, departAt: "00:15", arriveAt: "07:10", arriveDay: "same" as const };
+  const midnight = outingFrames({ ...input, transports: [ride] });
+  expect(midnight[0]).toMatchObject({ endPolicy: "must", end: east, endsAt: 1425 });
+  expect(midnight[1].parts.at(-1)?.startsAt).toBe(540);
+  const night = outingFrames({ ...input, transports: [{ ...ride, departAt: "23:40", arriveDay: "next" }] });
+  expect(night[1].parts.at(-1)?.endsAt).toBe(1390);
+  expect(night[2]).toMatchObject({ start: south, startsAt: 540, arrival: { station: south, at: 430 } });
+});

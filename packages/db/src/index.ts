@@ -36,14 +36,31 @@ export {
   planVersions,
   preferences,
   reservations,
+  siteUsageLimits,
+  userFeedback,
   schema,
 } from "./schema";
+export {
+  FEEDBACK_CATEGORIES,
+  FEEDBACK_STATUSES,
+  FeedbackStore,
+  type FeedbackCategory,
+  type FeedbackStatus,
+  type FeedbackSubmitInput,
+  type OpsFeedbackItem,
+  type OpsFeedbackList,
+} from "./feedback";
 export { DrizzlePreferenceRepository } from "./preference-repository";
 export { PgAgentRunStore, type StoredRun, type StoredStep } from "./agent-runs";
 export {
   chinaDay,
+  resetSiteDailyLimit,
+  resetUserDailyLimit,
+  setSiteDailyLimit,
   setUserDailyLimit,
+  SITE_DAILY_DEFAULTS,
   siteDailyLimit,
+  siteUsageOverview,
   USAGE_CATEGORIES,
   usageByUser,
   UsageLedger,
@@ -51,6 +68,10 @@ export {
   UsageUnavailableError,
   USER_DAILY_DEFAULTS,
   userDailyDefault,
+  type SiteUsageLimit,
   type UsageCategory,
   type UsageToday,
 } from "./usage";
+
+export * from "./model-prices";
+export { OpsReader, pruneBilling } from "./ops";

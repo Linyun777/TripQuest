@@ -1,5 +1,5 @@
 import {
-  dayMinutes,
+  dayMinutes, dayTime,
   type DayActivity,
   type DayIssue,
   type DayPlanningInput,
@@ -72,7 +72,7 @@ export const dayDraftSchema = z.strictObject({
   createdAt: z.iso.datetime({ offset: true }),
   date: z.iso.date(),
   timeZone: z.literal("Asia/Shanghai"),
-  window: z.strictObject({ startsAt: minute, endsAt: minute }),
+  window: z.strictObject({ startsAt: minute, endsAt: z.number().int().min(1).max(1440) }),
   startPlace: namedPlaceSchema,
   endPlace: namedPlaceSchema,
   places: z.array(namedPlaceSchema).min(1).max(30),
@@ -87,14 +87,15 @@ export const dayDraftSchema = z.strictObject({
     reason: z.string().min(1).max(80).optional(),
     arrivesAt: minute,
     startsAt: minute,
-    endsAt: minute,
+    endsAt: z.number().int().min(0).max(1440),
+    openArrival: z.literal(true).optional(),
     waitMinutes: z.number().int().min(0).max(1439),
   })).min(1).max(6),
   legs: z.array(z.strictObject({
     fromPlaceId: id,
     toPlaceId: id,
-    departsAt: minute,
-    arrivesAt: minute,
+    departsAt: z.number().int().min(0).max(1440),
+    arrivesAt: z.number().int().min(0).max(1440),
     travelMinutes: z.number().int().min(0).max(1439),
     bufferMinutes: z.union([z.literal(0), z.literal(5), z.literal(10)]),
     distanceMeters: z.number().int().nonnegative(),
@@ -106,7 +107,7 @@ export const dayDraftSchema = z.strictObject({
     summary: z.string().min(1).max(80).optional(),
     walkingMeters: z.number().int().nonnegative().optional(),
   })).min(2).max(7),
-  endArrival: minute,
+  endArrival: z.number().int().min(0).max(1440),
   totalWalkingMinutes: z.number().int().nonnegative(),
   longestWalkingMinutes: z.number().int().nonnegative(),
   verification: z.enum(["checked", "pending"]),
@@ -378,6 +379,7 @@ export function createDayPlanningProblem(options: {
       window: { startsAt: dayMinutes(requirements.window.startsAt), endsAt: dayMinutes(requirements.window.endsAt) },
       startPlaceId,
       endPlaceId,
+      ...(requirements.endPolicy ? { endPolicy: requirements.endPolicy } : {}),
       places: places.map(({ placeId, selection }) => ({
         placeId,
         ...selection.place.ref,
@@ -440,7 +442,20 @@ export function buildDayDraft(options: {
     "步行时间按本轮查询估计，并非所选日期的交通预测。",
     "新发现地点的停留时长为系统预计，尚未核实营业与票务。",
   ];
-  if (schedule.legs.some((leg) => leg.source === "same_place_assumption")) {
+  if (problem.input.endPolicy === "prefer" && schedule.legs.at(-1)?.toPlaceId !== problem.input.endPlaceId) {
+    const last = schedule.activities.at(-1)!;
+    const route = options.routes?.find((edge) => edge.fromPlaceId === last.placeId && edge.toPlaceId === problem.input.endPlaceId);
+    if (route?.status === "known") {
+      const activity = options.activities.find((item) => item.activity.activityId === last.activityId)!.activity;
+      const stay = options.stays?.get(last.activityId) ?? activity.stayMinutes;
+      const arrival = last.startsAt + stay + Math.ceil(route.durationSeconds / 60) + problem.input.bufferMinutes;
+      const target = arrival >= 1440 ? "次日 " + dayTime(arrival % 1440) : dayTime(arrival);
+      assumptions.unshift(arrival > problem.input.window.endsAt
+        ? "保留游玩时间后预计 " + target + " 才能到达终点，超过截止 " + dayTime(problem.input.window.endsAt) + "，返程自行安排。"
+        : "游玩时段与返程无法同时满足，返程自行安排。");
+    } else assumptions.unshift("返程路线无法核实，返程自行安排。");
+  }
+  if (schedule.legs.some((leg, index) => leg.source === "same_place_assumption" && !(index === schedule.activities.length && schedule.activities.at(-1)?.openArrival))) {
     assumptions.push("同一地点，未估计场内移动；活动停留仍计时。");
   }
   const hasFood = schedule.activities.some((a) => {
@@ -464,7 +479,7 @@ export function buildDayDraft(options: {
     timeZone: problem.input.timeZone,
     window: problem.input.window,
     startPlace: named(problem.input.startPlaceId),
-    endPlace: named(problem.input.endPlaceId),
+    endPlace: named(schedule.legs.at(-1)!.toPlaceId),
     places: options.places.filter((p) => usedPlaces.has(p.placeId)).map((p) => named(p.placeId)),
     activities: schedule.activities.map((a) => {
       const record = options.activities.find((r) => r.activity.activityId === a.activityId)!;

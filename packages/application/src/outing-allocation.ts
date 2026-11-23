@@ -8,7 +8,7 @@ import {
   type PlanningPlace,
   type TravelPreference,
 } from "./planning-requirements";
-import { SHORT_SEGMENT_MINUTES, splitDay, timeTransfer, timeTransfers, type DayTransfer, type TimedTransfer } from "./transfer-day";
+import { SHORT_SEGMENT_MINUTES, TRANSFER_BUFFER_MINUTES, splitDay, timeTransfer, timeTransfers, type DayTransfer, type TimedTransfer } from "./transfer-day";
 
 /**
  * V2.11 出游分到各天（stages/V2.11.md §3.6）：代码算每天的可用时间和起止（住处、车站），规则分配作为
@@ -45,7 +45,17 @@ export interface OutingInterest {
   readonly day?: number;
   readonly perDay?: true;
 }
+type EndPolicy = "last" | "prefer" | "must";
+interface DayBoundary {
+  readonly start?: PlanningPlace;
+  readonly end?: PlanningPlace;
+  readonly startsAt?: string;
+  readonly endsAt?: string;
+  readonly endPolicy?: EndPolicy;
+}
 export interface OutingPlanInput {
+  readonly endPolicy?: EndPolicy;
+  readonly boundaries?: Readonly<Record<string, DayBoundary>>;
   readonly dates: { readonly from: string; readonly to: string };
   readonly dailyWindow: { readonly startsAt: string; readonly endsAt: string };
   readonly start: { readonly place: PlanningPlace; readonly at: string | null };
@@ -66,6 +76,13 @@ export interface OutingPlanInput {
 
 /** 一天的框架：起止地点、起止时刻、当天的固定交通、扣掉交通和固定事项后的可用分钟数、经过的城市。 */
 export interface DayFrame {
+  readonly endPolicy?: EndPolicy;
+  readonly explicitStart?: boolean;
+  readonly playFrom?: number;
+  readonly postRideStart?: PlanningPlace;
+  readonly missingStart?: boolean;
+  readonly conflictingEnd?: boolean;
+  readonly arrival?: { readonly station: PlanningPlace; readonly at: number };
   readonly day: number;
   readonly date: string;
   readonly start: PlanningPlace;
@@ -86,6 +103,7 @@ export interface DayFrame {
     readonly startsAt: number;
     readonly endsAt: number;
     readonly minutes: number;
+    readonly openEnd?: boolean;
   }[];
   readonly cities: readonly string[];
   /** 这一天的落脚点（起点、终点、车站）：判断地点离这天近不近。 */
@@ -123,38 +141,55 @@ export function outingFrames(input: OutingPlanInput): DayFrame[] {
   const frames: DayFrame[] = [];
   let previousEnd = input.start.place;
   for (let day = 1; day <= count; day += 1) {
+    const date = addDays(input.dates.from, day - 1);
+    const boundary = input.boundaries?.[date];
+    const ordinaryStart = boundary?.startsAt ?? (day === 1 ? input.start.at : null) ?? input.dailyWindow.startsAt;
     const rides = input.transports.filter((item) => item.day === day);
+    if (rides.every((ride) => ride.departAt)) rides.sort((a, b) => a.departAt!.localeCompare(b.departAt!));
+    const needsPreviousEvening = (ride: typeof rides[number]) => ride.departAt != null &&
+      minutes(ride.departAt) < (ride.bufferMinutes ?? TRANSFER_BUFFER_MINUTES[ride.mode]);
+    const earlyRide = day > 1 ? rides.find(needsPreviousEvening) : undefined;
+    const tomorrow = input.transports.find((ride) => ride.day === day + 1 && needsPreviousEvening(ride));
     const arrived = input.transports.find((item) => item.day === day - 1 && item.arriveDay === "next");
-    const before = day === 1 ? input.start.place : arrived ? arrived.to : lodgingPlace(input, day - 1) ?? previousEnd;
-    const usual = arrived ? timeTransfer(arrived).arriveAt
-      : day === 1 && input.start.at ? minutes(input.start.at) : minutes(input.dailyWindow.startsAt);
+    const before = earlyRide?.from ?? boundary?.start ?? (day === 1 ? input.start.place : arrived?.to ?? lodgingPlace(input, day - 1) ?? previousEnd);
+    const usual = earlyRide ? 0 : arrived
+      ? Math.max(timeTransfer(arrived).arriveAt, input.endPolicy || boundary ? minutes(ordinaryStart) : 0)
+      : minutes(ordinaryStart);
     // V4.2（stages/V4.2.md §3.1）：按每天的时间窗开始的一天，早上有固定事项、来不及过去时提前出门；
     // 夜车到达、用户说了几点出发的不动。
     const fixedToday = input.visits.flatMap((visit) => visit.role === "fixed" && visit.day === day && visit.startsAt
       ? [{ startsAt: minutes(visit.startsAt), name: visit.place.place.name }]
       : []);
-    const early = !arrived && !(day === 1 && input.start.at) ? earlyStart(usual, fixedToday) : null;
+    const early = !boundary?.startsAt && !input.endPolicy && !arrived && !(day === 1 && input.start.at) ? earlyStart(usual, fixedToday) : null;
     const opening = early?.startsAt ?? usual;
     // 第一天从车站坐车出发、没说几点出发：按车次估计的出发时刻开始这一天（长途最早 7 点走，不被 9 点的时间窗卡住）。
-    const leaveEarly = day === 1 && !input.start.at;
+    const leaveEarly = day === 1 && !input.start.at && !boundary?.startsAt && !input.endPolicy;
     const transfers = timeTransfers(rides, before, opening, leaveEarly);
     const first = transfers[0];
     const startsAt = leaveEarly && first && first.departAt - first.bufferMinutes < opening ? first.departAt - first.bufferMinutes : opening;
     // 最后一天从结束地点坐车走（“最后从云岭南站坐高铁回杭州”）：这趟出游在上车时结束，下车后不再回结束地点。
     const leaving = day === count ? transfers.at(-1) : undefined;
-    const boardsAtEnd = !!leaving && !leaving.nextDay &&
+    const boardsAtEnd = !input.endPolicy && !boundary?.end && !!leaving && !leaving.nextDay &&
       leaving.transfer.from.place.ref.externalId === input.end.place.place.ref.externalId;
     const overnight = transfers.find((item) => item.nextDay);
     const landed = overnight ? undefined : transfers.at(-1)?.transfer.to;
     const settled = lodgingPlace(input, day);
-    const after = boardsAtEnd ? leaving!.transfer.to : day === count ? input.end.place : settled ?? landed ?? before;
+    const policy = tomorrow || overnight ? "must" : boundary?.endPolicy ?? (day === count ? input.endPolicy : input.endPolicy ? "last" : undefined);
+    const boardingStation = tomorrow?.from ?? overnight?.transfer.from;
+    const requestedEnd = boundary?.end ?? (day === count ? input.end.place : undefined);
+    const requestedPolicy = boundary?.endPolicy ?? (day === count ? input.endPolicy : undefined);
+    const conflictingEnd = !!boardingStation && requestedPolicy === "must" && !!requestedEnd &&
+      requestedEnd.place.ref.externalId !== boardingStation.place.ref.externalId;
+    const after = tomorrow?.from ?? boundary?.end ?? (boardsAtEnd ? leaving!.transfer.to : day === count ? input.end.place : settled ?? landed ?? before);
     const unsettled = day < count && !settled && !overnight && input.lodging[day - 1] !== "onBoard"
       ? `第 ${day} 晚住处未定，按${after.place.name}附近估计。`
       : undefined;
     previousEnd = after;
-    const endsAt = overnight ? overnight.departAt - overnight.bufferMinutes
+    const deadline = minutes(boundary?.endsAt ?? (day === count ? input.end.at : null) ?? input.dailyWindow.endsAt);
+    const endsAt = tomorrow ? Math.min(deadline, 1440 + minutes(tomorrow.departAt!) - (tomorrow.bufferMinutes ?? TRANSFER_BUFFER_MINUTES[tomorrow.mode]))
+      : overnight ? Math.min(deadline, overnight.departAt - overnight.bufferMinutes)
       : boardsAtEnd ? leaving!.arriveAt
-        : day === count && input.end.at ? minutes(input.end.at) : minutes(input.dailyWindow.endsAt);
+        : deadline;
     const busy = transfers.filter((item) => !item.nextDay).reduce((total, item) => total + item.bufferMinutes + Math.max(0, item.arriveAt - item.departAt), 0);
     const fixed = input.visits
       .filter((visit) => visit.role === "fixed" && visit.day === day && visit.startsAt && visit.endsAt)
@@ -162,7 +197,8 @@ export function outingFrames(input: OutingPlanInput): DayFrame[] {
     const anchors = [before, after, ...transfers.flatMap((item) => [item.transfer.from, item.transfer.to])];
     const window = { startsAt: clock(startsAt), endsAt: clock(Math.max(startsAt, endsAt)) };
     const pieces = splitDay({
-      date: addDays(input.dates.from, day - 1), window, start: before, end: after,
+      date, window, start: before, end: after, endPolicy: policy,
+      ...(earlyRide ? { playFrom: minutes(ordinaryStart), postRideStart: boundary?.start } : {}),
       transfers: transfers.map((item) => item.transfer), visits: [], interests: [],
     }).segments;
     const fixedIn = (from: number, to: number) => input.visits
@@ -171,7 +207,12 @@ export function outingFrames(input: OutingPlanInput): DayFrame[] {
       .reduce((total, visit) => total + minutes(visit.endsAt!) - minutes(visit.startsAt!), 0);
     frames.push({
       day,
-      date: addDays(input.dates.from, day - 1),
+      date, endPolicy: policy,
+      conflictingEnd,
+      missingStart: !!input.endPolicy && day > 1 && !earlyRide && !arrived && !boundary?.start && !lodgingPlace(input, day - 1),
+      ...(earlyRide ? { playFrom: minutes(ordinaryStart), postRideStart: boundary?.start } : {}),
+      explicitStart: !!(boundary?.startsAt || (day === 1 && input.start.at)),
+      ...(arrived ? { arrival: { station: arrived.to, at: timeTransfer(arrived).arriveAt } } : {}),
       start: before,
       end: after,
       startsAt,
@@ -180,6 +221,7 @@ export function outingFrames(input: OutingPlanInput): DayFrame[] {
       // 提前出门多出来的时间只用来赶路，可用时间仍从原来的开始算。
       available: Math.max(0, endsAt - (early ? Math.max(startsAt, usual) : startsAt) - busy - fixed),
       parts: pieces.map((piece) => ({
+        openEnd: piece.index === transfers.length && (policy === "last" || policy === "prefer"),
         city: piece.city, start: piece.start, end: piece.end, startsAt: piece.startsAt, endsAt: piece.endsAt,
         minutes: Math.max(0, piece.endsAt - piece.startsAt - fixedIn(piece.startsAt, piece.endsAt)),
       })),
@@ -346,7 +388,7 @@ function nearness(frame: DayFrame, place: PlanningPlace, travel: TravelPreferenc
 
 /** 一段装进这些地点要多少分钟：停留（估计的按下限）+ 从这段起点按就近顺序串起来、到这段终点的粗估路程。 */
 function partLoad(part: DayFrame["parts"][number], visits: readonly OutingVisit[], travel: TravelPreference): number {
-  const stays = visits.filter((visit) => visit.role !== "fixed").reduce((total, visit) => total + (visit.floor ?? visit.stayMinutes), 0);
+  let stays = visits.filter((visit) => visit.role !== "fixed").reduce((total, visit) => total + (visit.floor ?? visit.stayMinutes), 0);
   let at = part.start;
   let route = 0;
   const left = [...visits];
@@ -355,8 +397,9 @@ function partLoad(part: DayFrame["parts"][number], visits: readonly OutingVisit[
     const next = left.shift()!;
     route += roughMinutes(at, next.place, travel);
     at = next.place;
+    if (!left.length && part.openEnd && next.role !== "fixed" && next.floor !== undefined) stays -= next.floor;
   }
-  return stays + route + (visits.length ? roughMinutes(at, part.end, travel) : 0);
+  return stays + route + (visits.length && !part.openEnd ? roughMinutes(at, part.end, travel) : 0);
 }
 
 /** 地点放进这天的哪一段：同城的那段，没有同城的放最长的那段。 */

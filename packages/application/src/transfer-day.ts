@@ -19,6 +19,7 @@ export const SHORT_SEGMENT_MINUTES = 60;
 export const EARLY_ARRIVAL_MINUTES = 8 * 60;
 
 export interface DayTransfer {
+  readonly id?: string;
   readonly mode: keyof typeof TRANSFER_BUFFER_MINUTES;
   readonly from: PlanningPlace;
   readonly to: PlanningPlace;
@@ -37,6 +38,11 @@ export type DayInterest = NonNullable<PlanningRequirements["freeInterests"]>[num
 };
 
 export interface TransferDayInput {
+  readonly endPolicy?: "last" | "prefer" | "must";
+  readonly explicitStart?: boolean;
+  readonly playFrom?: number;
+  readonly postRideStart?: PlanningPlace;
+  readonly arrival?: { readonly station: PlanningPlace; readonly at: number };
   readonly date: string;
   readonly window: { readonly startsAt: string; readonly endsAt: string };
   readonly start: PlanningPlace;
@@ -184,19 +190,20 @@ export function splitDay(input: TransferDayInput): SplitDay {
   let place = input.start;
   let at = minutes(input.window.startsAt);
   for (const item of transfers) {
-    bounds.push({ start: place, end: item.transfer.from, startsAt: at, endsAt: item.departAt - item.bufferMinutes });
+    bounds.push({ start: place, end: item.transfer.from, startsAt: at, endsAt: Math.max(0, Math.min(minutes(input.window.endsAt), item.departAt - item.bufferMinutes)) });
     if (item.nextDay) {
       place = item.transfer.to;
       at = Number.POSITIVE_INFINITY;
       break;
     }
-    place = item.transfer.to;
-    at = item.arriveAt;
+    const firstRide = item === transfers[0];
+    place = firstRide && input.postRideStart ? input.postRideStart : item.transfer.to;
+    at = firstRide ? Math.max(item.arriveAt, input.playFrom ?? 0) : item.arriveAt;
   }
   if (Number.isFinite(at)) bounds.push({ start: place, end: input.end, startsAt: at, endsAt: minutes(input.window.endsAt) });
   // 夜车早上到站：8 点前不排地点（这段从 8 点开始找地方），提示可以先休息或吃早饭。
   const first = bounds[0];
-  if (first && first.startsAt < EARLY_ARRIVAL_MINUTES && isStation(first.start)) {
+  if (!input.endPolicy && !input.explicitStart && first && first.startsAt < EARLY_ARRIVAL_MINUTES && isStation(first.start)) {
     notes.push("到得早，可以先找地方休息或吃早饭。");
     first.startsAt = Math.min(EARLY_ARRIVAL_MINUTES, first.endsAt);
   }
@@ -311,6 +318,7 @@ export function idleNotes(parts: readonly TransferDayPart[], split: SplitDay): s
         if (before && leg) say(before.endsAt, activity.startsAt - leg.travelMinutes - leg.bufferMinutes, ` 离开${name ?? "上一站"}，`);
       }
     }
+    if (part.kind === "plan" && part.draft.activities.at(-1)?.openArrival) continue;
     const from = part.kind === "plan" ? part.draft.endArrival : part.arrivesAt;
     say(from, segment.endsAt, ` 到${segment.end.place.name.slice(0, 30)}，`);
   }

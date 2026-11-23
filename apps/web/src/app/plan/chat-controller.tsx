@@ -14,6 +14,7 @@ import type { TripProgressView } from "./trip-estimate";
 import type { AdjustRequest } from "@tripquest/application/real-adjust";
 import type { OutingChangeRequest } from "@tripquest/agent/chat";
 import { usePageCity } from "../_ui/city";
+import { FeedbackTrigger } from "../_ui/feedback-sheet";
 import { ModeSwitch, type PlanMode } from "../_ui/mode";
 import type {
   AdjustCardView,
@@ -30,6 +31,10 @@ import type {
 } from "./view-models";
 
 const EDIT_FAILED: Record<string, string> = {
+  city_mismatch: "日常出行的地点需要在同一座城市。",
+  day_outside_dates: "请先核对逐日设置和车次是否在行程日期内。",
+  night_on_board: "车上过夜与当晚住处冲突，请先修改当晚的住处或车次。",
+  transport_time_order: "车次时刻倒序或与另一趟车重叠，请核对日期和时间。",
   window_order: "结束时间要晚于出发时间。",
   fixed_time: "固定事项的结束时间要晚于开始时间。",
   fixed_outside_window: "固定事项要在出发和结束时间之间。",
@@ -347,14 +352,14 @@ export function ChatController({
   );
 
   /** 卡片编辑复用聊天补丁协议和校验，成功后仅替换当前卡片。 */
-  async function edit(patch: DraftPatch): Promise<string | null> {
+  async function edit(patch: DraftPatch, selections?: string[]): Promise<string | null> {
     if (!conversationId || !liveCard?.card.fingerprint) return "请先在对话里说说你的需求。";
     let reply: { status: string; card?: RequirementsCardView; code?: string };
     try {
       const response = await fetch(`/api/conversations/${conversationId}/draft`, {
         method: "PATCH",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ patch, fingerprint: liveCard.card.fingerprint }),
+        body: JSON.stringify({ patch, selections, fingerprint: liveCard.card.fingerprint }),
       });
       reply = await response.json();
     } catch {
@@ -615,6 +620,10 @@ export function ChatController({
   async function startPlanning() {
     if (busy || !conversationId || !liveCard?.card.fingerprint) return;
     if (liveCard.card.mode === "outing") {
+      if (liveCard.card.boundaryChange) {
+        await streamPlanning(`/api/conversations/${conversationId}/outing/change`, { expectedCount: count, request: { boundaries: true } });
+        return;
+      }
       await streamPlanning(`/api/conversations/${conversationId}/outing`, { fingerprint: liveCard.card.fingerprint });
       return;
     }
@@ -884,6 +893,17 @@ export function ChatController({
       trip={journeyId || outingTrip.trip ? trip : null}
       mode={mode}
       modeSwitch={<ModeSwitch value={mode} onChange={busy || switching ? undefined : (to) => void switchMode(to)} />}
+      headerAction={
+        <FeedbackTrigger
+          variant="header"
+          context={{
+            pagePath: conversationId ? `/plan/${conversationId}` : "/plan/new",
+            contextLabel: mode === "outing" ? "对话规划 · 出游" : "对话规划 · 日常",
+            conversationId,
+            journeyId,
+          }}
+        />
+      }
       outingHeader={outingTrip.trip && pick ? (
         <OutingProgressHeader
           trip={outingTrip.trip}

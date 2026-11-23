@@ -9,6 +9,7 @@ export type TripStopView = {
   /** 自有计划中的当天分钟数。 */
   readonly startsAt: number;
   readonly endsAt: number;
+  readonly openArrival?: true;
   readonly status: "done" | "skipped" | "todo";
   /** 早期版本留下的归档项只展示，不再允许重新标记。 */
   readonly archived: boolean;
@@ -91,7 +92,7 @@ export function estimateTrip(view: TripProgressView, nowMinute: number, today: b
       label: today ? `${clock(target.stop.startsAt)} 到${target.stop.name}` : `行程当天开始后，这里会估算进度`,
     };
   }
-  if (nowMinute >= target.stop.endsAt) {
+  if (!target.stop.openArrival && nowMinute >= target.stop.endsAt) {
     // 时间已过但用户未标记时显示逾时待确认，不能自动跳到下一站或算作完成。
     states[target.index] = "overdue";
     if (visits[k + 1]) states[visits[k + 1].index] = "next";
@@ -105,7 +106,7 @@ export function estimateTrip(view: TripProgressView, nowMinute: number, today: b
     if (visits[k + 1]) states[visits[k + 1].index] = "next";
     return {
       states, done, total, position: { kind: "at", stop: target.index }, next: nextOf(1), remainingMinutes,
-      label: `${clock(nowMinute)} · 在${target.stop.name}，计划到 ${clock(target.stop.endsAt)}`,
+      label: target.stop.openArrival ? target.stop.name + " · 自由活动" : `${clock(nowMinute)} · 在${target.stop.name}，计划到 ${clock(target.stop.endsAt)}`,
     };
   }
   states[target.index] = "next";

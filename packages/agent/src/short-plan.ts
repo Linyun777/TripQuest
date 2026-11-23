@@ -18,7 +18,8 @@ export async function planShortTrip(options: {
   city?: { adcode: string; name: string };
   /** 用户明确要求返回的地点；缺省就在最后选中的站结束，不强制回到起点。 */
   back?: PlanningPlace;
-  stops: readonly { place: PlanningPlace; stayMinutes: number }[];
+  endPolicy?: "last" | "prefer" | "must";
+  stops: readonly { place: PlanningPlace; stayMinutes: number; estimated?: boolean }[];
   travel: TravelPreference;
   provider: MobilityProvider;
   now: () => number;
@@ -38,10 +39,11 @@ export async function planShortTrip(options: {
     window: options.window,
     startPlace: options.start,
     endPlace: options.back ?? options.stops.at(-1)!.place,
+    endPolicy: options.endPolicy,
     interests: [],
     pace: "standard",
     travel: options.travel,
-    visits: options.stops.map((stop) => ({ place: stop.place, role: "required", stayMinutes: stop.stayMinutes })),
+    visits: options.stops.map((stop) => ({ place: stop.place, role: "required", stayMinutes: stop.stayMinutes, ...(stop.estimated ? { staySource: "estimate" } : {}) })),
   });
   const problem = createDayPlanningProblem({
     requirements,

@@ -1,3 +1,4 @@
+import { modelEvent } from "../usage/usage";
 import "server-only";
 import { requireOwner } from "../auth/owner";
 import { randomUUID } from "node:crypto";
@@ -29,7 +30,7 @@ import { afterOutingTurn, withAfterTurn } from "@tripquest/agent/outing-after-tu
 import { datesFromCard } from "@tripquest/application/said-dates";
 import { rideHints } from "@tripquest/application/outing-rides";
 import { stayHints, staysLabel } from "@tripquest/application/outing-stays";
-import { createOutingService, hasSavedOuting, latestGeneration, outingChangeView, outingChatContext, outingReviewView, savedOuting, type OutingReader } from "./outing-service";
+import { createOutingService, changedBoundaryDays, hasSavedOuting, latestGeneration, outingChangeView, outingChatContext, outingReviewView, savedOuting, type OutingReader } from "./outing-service";
 import type { OutingChangeRequest } from "@tripquest/agent/outing-change";
 import { fingerprint } from "@tripquest/application/fingerprint";
 import { DEFAULT_TRAVEL } from "@tripquest/application/planning";
@@ -42,8 +43,10 @@ import type { CityResolver, MobilityProvider, NearbyPlaceProvider, PlaceLookupPr
 import { straightMeters } from "@tripquest/application/leg-choice";
 import { readRealPlaceMode } from "../real-places/real-mode";
 import { storedChoicesView } from "./choices-view";
+import { readPlanningConfig } from "../planning/new/planning-config";
+import { verifyPlaceToken } from "../planning/new/place-token";
 import { createUserUsage, meteredAmap, meteredIntentRouter, meteredKnowledge, meteredWebSearch, reserveModel, RUN_BUDGET_MESSAGE } from "../usage/usage";
-import { currentRun, type AgentRun } from "@tripquest/agent/runs";
+import { currentRun, type AgentRun, type RunResult } from "@tripquest/agent/runs";
 import { traced } from "../runs/runs";
 import type {
   CardPlace,
@@ -222,7 +225,7 @@ export function createConversationService(options: ConversationServiceOptions = 
       config: await profileConfig(),
       profileId: env.AGENT_MODEL_PROFILE ?? "",
       environment: env,
-      beforeRequest: () => ledger.reserve("model", "model", "chat-summary"),
+      beforeRequest: () => modelEvent(ledger, "chat-summary"),
     });
   }
 
@@ -297,22 +300,25 @@ export function createConversationService(options: ConversationServiceOptions = 
   }
 
   /** 一条用户输入执行一轮 Agent，完成后将本轮消息与草案原子追加到对话。V3.0：一轮一个 chat_turn 根运行。 */
-  function turn(
-    conversationId: string,
-    text: string,
-    expectedCount: number,
-    onProgress?: (text: string) => void,
-    clientId?: string,
+  type ReportTurn = (result: ChatTurnResult) => void;
+  function traceTurn(
+    operation: (run: AgentRun, report: ReportTurn) => Promise<TurnReply>,
   ): Promise<TurnReply> {
+    let outcome: RunResult = { status: "ok" };
     return traced(
       { trigger: "chat_turn", userId: options.userId ?? null },
-      (run) => runTurn(run, conversationId, text, expectedCount, onProgress, clientId),
-      (reply) => (reply.status === "ok" ? { status: "ok" } : { status: "failed", outcome: reply.status }),
+      (run) => operation(run, (result) => {
+        outcome = result.status === "failed"
+          ? { status: "failed", outcome: result.code }
+          : { status: result.reply.fallback ? "fallback" : "ok" };
+      }),
+      (reply) => reply.status === "ok" ? outcome : { status: "failed", outcome: reply.status },
     );
   }
 
   async function runTurn(
     run: AgentRun,
+    report: ReportTurn,
     conversationId: string,
     text: string,
     expectedCount: number,
@@ -395,6 +401,7 @@ export function createConversationService(options: ConversationServiceOptions = 
     } catch {
       result = { status: "failed", code: "internal_error", hints: [], counts: { model: 0, searches: 0, weather: 0, webSearches: 0, knowledge: 0, repairs: 0 }, usage: null };
     }
+    report(result);
     if (result.status === "failed" && environment().NODE_ENV === "development") {
       // 只记录失败代码，不输出用户对话正文。
       console.warn(`[chat] turn failed: ${result.code}; hints: ${result.hints.join(", ") || "none"}`);
@@ -469,15 +476,36 @@ export function createConversationService(options: ConversationServiceOptions = 
     };
   }
 
+  function pendingBoundaryChange(draft: RequirementsDraft, messages: Parameters<typeof latestGeneration>[0]) {
+    const generation = latestGeneration(messages);
+    return draft.mode === "outing" && !!generation?.days.some((day) => day.tripId) && changedBoundaryDays(draft, generation.days).length > 0;
+  }
+
   /** 卡片编辑与 Agent 共用补丁和校验规则，只改当前草案、不追加消息；下一轮读取编辑后的需求。 */
-  async function editDraft(conversationId: string, patch: DraftPatch, expectedFingerprint: string): Promise<EditReply> {
+  async function editDraft(conversationId: string, patch: DraftPatch, expectedFingerprint: string, selections: string[] = []): Promise<EditReply> {
     if (!readChatAvailability(environment()).enabled && !options.runner) return { status: "unavailable" };
     const store = repository();
     const found = await store.findConversation(conversationId);
     if (!found) return { status: "not_found" };
     if (fingerprint(found.conversation.draft) !== expectedFingerprint) return { status: "conflict" };
     // 卡片不能直接绑定任意新地点，只能从服务端已有候选中选择。
-    const result = applyDraftPatch(found.conversation.draft, patch, new Map(), { nowMs: now() });
+    const candidates = new Map<string, { externalId: string; name: string; cityAdcode?: string }>();
+    if (selections.length) {
+      const config = readPlanningConfig(environment());
+      if (!config.enabled || config.source !== "amap") return { status: "unavailable" };
+      try {
+        for (const [index, token] of selections.entries()) {
+          const { place } = verifyPlaceToken(token, config.secret, "amap", now());
+          if (found.conversation.draft.mode !== "outing" && place.cityAdcode !== draftCity(found.conversation.draft).adcode) {
+            return { status: "invalid", code: "city_mismatch" };
+          }
+          candidates.set(`c${index + 1}`, { ...place.ref, name: place.name, cityAdcode: place.cityAdcode });
+        }
+      } catch {
+        return { status: "invalid", code: "unknown_candidate" };
+      }
+    }
+    const result = applyDraftPatch(found.conversation.draft, patch, candidates, { nowMs: now(), manualCard: true });
     if (result.status === "invalid") return { status: "invalid", code: result.code };
     // V4.4：用户在卡片上自己改的日期就是用户给的，不再暂定。
     const draft = patch.date !== undefined || patch.dates !== undefined ? datesFromCard(result.draft) : result.draft;
@@ -489,7 +517,7 @@ export function createConversationService(options: ConversationServiceOptions = 
     });
     if (updated.status !== "updated") return { status: updated.status };
     const weatherChipFor = await weatherLookup();
-    return { status: "ok", card: { ...cardView(draft, now(), await weatherChipFor(draft)), fingerprint: fingerprint(draft) } };
+    return { status: "ok", card: { ...cardView(draft, now(), await weatherChipFor(draft)), boundaryChange: pendingBoundaryChange(draft, found.messages), fingerprint: fingerprint(draft) } };
   }
 
   /**
@@ -515,7 +543,7 @@ export function createConversationService(options: ConversationServiceOptions = 
           config: await profileConfig(),
           profileId: environment().AGENT_MODEL_PROFILE ?? "",
           environment: environment(),
-          beforeRequest: () => ledger.reserve("model", "model", "plan"),
+          beforeRequest: () => modelEvent(ledger, "plan"),
         });
       },
     });
@@ -603,7 +631,7 @@ export function createConversationService(options: ConversationServiceOptions = 
             id: message.id,
             role: "assistant",
             kind: "requirements_card",
-            card: { ...card, fingerprint: fingerprint(current) },
+            card: { ...card, boundaryChange: pendingBoundaryChange(current, all), fingerprint: fingerprint(current) },
             latest: true,
           });
         } else {
@@ -781,10 +809,18 @@ export function createConversationService(options: ConversationServiceOptions = 
     /** V2.10：city 是打开页面时定位得到的城市（页面带来），先写进卡片再跑第一轮；没有就是缺省杭州。 */
     // V3.0：新对话的第一轮和后面的轮次一样是 chat_turn 根运行（turn 沿用这个运行）。
     start: (text: string, onProgress?: (text: string) => void, city?: DraftCity, mode?: "outing", clientId?: string) =>
-      once(clientId, () => traced({ trigger: "chat_turn", userId: options.userId ?? null }, () => start(text, onProgress, city, mode, clientId))),
+      once(clientId, () =>
+        traceTurn((run, report) =>
+          start(run, report, text, onProgress, city, mode, clientId),
+        ),
+      ),
     locateCity: (point: { longitude: number; latitude: number }) => traced({ trigger: "locate", userId: options.userId ?? null }, () => locateCity(point)),
     send: (conversationId: string, text: string, expectedCount: number, onProgress?: (text: string) => void, clientId?: string) =>
-      once(clientId, () => turn(conversationId, text, expectedCount, onProgress, clientId)),
+      once(clientId, () =>
+        traceTurn((run, report) =>
+          runTurn(run, report, conversationId, text, expectedCount, onProgress, clientId),
+        ),
+      ),
     switchMode: (...args: Parameters<typeof switchMode>) => traced({ trigger: "switch_mode", userId: options.userId ?? null }, () => switchMode(...args)),
     editDraft: (...args: Parameters<typeof editDraft>) => traced({ trigger: "edit_card", userId: options.userId ?? null }, () => editDraft(...args)),
     allocate,
@@ -792,12 +828,12 @@ export function createConversationService(options: ConversationServiceOptions = 
     view: (conversationId: string) => traced({ trigger: "page_view", userId: options.userId ?? null }, () => view(conversationId)),
   };
 
-  async function start(text: string, onProgress?: (text: string) => void, city?: DraftCity, mode?: "outing", clientId?: string): Promise<TurnReply> {
+  async function start(run: AgentRun, report: ReportTurn, text: string, onProgress?: (text: string) => void, city?: DraftCity, mode?: "outing", clientId?: string): Promise<TurnReply> {
     if (!readChatAvailability(environment()).enabled && !options.runner) return { status: "unavailable" };
     const store = repository();
     // V3.5：第一条消息重发：已经建过对话就回那一轮（runTurn 按客户端编号找到它），不再建一段新的。
     const existing = clientId ? await store.findConversationIdByClientId?.(clientId) : null;
-    if (existing) return turn(existing, text, 0, onProgress, clientId);
+    if (existing) return runTurn(run, report, existing, text, 0, onProgress, clientId);
     const conversation = await store.createConversation({ id: randomUUID(), title: DEFAULT_TITLE, now: new Date(now()) });
     // V2.11：出游从出游卡片开始（模式由用户在页面上选）。
     const located = city ? { adcode: city.adcode, name: city.name, source: "located" as const } : undefined;
@@ -809,7 +845,7 @@ export function createConversationService(options: ConversationServiceOptions = 
         now: new Date(now()),
       });
     }
-    return turn(conversation.id, text, 0, onProgress, clientId);
+    return runTurn(run, report, conversation.id, text, 0, onProgress, clientId);
   }
 
   /** V2.10：打开页面时的定位只换成所在城市（编码和名称）；精确点不保存、不记日志。 */
@@ -916,7 +952,7 @@ export function cardView(
     value === null ? { status: "missing" }
       : value.status === "current" ? { status: "current" }
       : value.status === "bound"
-        ? { status: "bound", placeId: value.externalId, name: value.name, ...(value.nearby ? { nearby: true } : {}) }
+        ? { status: "bound", placeId: value.externalId, name: value.name, ...(value.city ? { cityCode: value.city } : {}), ...(value.nearby ? { nearby: true } : {}) }
         : {
             status: "choose",
             mention: value.mention,
@@ -928,7 +964,10 @@ export function cardView(
     date: draft.date,
     dateLabel: draft.date ? dateLabel(draft.date, nowMs) : null,
     ...(draft.date && draft.datesGuessed ? { dateGuessed: true as const } : {}),
+    startsAt: draft.startsAt, endsAt: draft.endsAt,
     window: draft.startsAt && draft.endsAt ? { startsAt: draft.startsAt, endsAt: draft.endsAt } : null,
+    endPolicy: draft.endPolicy,
+    cityCode: draftCity(draft).adcode,
     start: place(draft.start),
     end: place(draft.end),
     visits: draft.visits.map((visit) => ({
@@ -963,6 +1002,9 @@ function outingView(outing: OutingDraft, place: (value: DraftPlace | null) => Ca
     startAt: outing.startAt,
     endAt: outing.endAt,
     dailyWindow: outing.dailyWindow,
+    dayBoundaries: Object.fromEntries(Object.entries(outing.dayBoundaries ?? {}).map(([date, values]) => [date, {
+      ...values, start: place(values.start ?? null), end: place(values.end ?? null),
+    }])) ,
     lodging: Array.from({ length: Math.max(0, days - 1) }, (_, index) => {
       const night = outing.lodging.find((item) => item.night === index + 1);
       return {
@@ -1045,7 +1087,8 @@ function storedPlanView(body: Extract<StoredMessage, { kind: "plan_card" }>["bod
     stops: body.stops.map((stop, index) => ({
       key: `stop-${index}`,
       startsAt: stop.startsAt,
-      endsAt: stop.endsAt,
+      endsAt: stop.endsAt ?? stop.startsAt,
+      openArrival: stop.openArrival,
       name: stop.name,
       role: stop.role,
       ...(stop.reason ? { reason: stop.reason } : {}),

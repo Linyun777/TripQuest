@@ -1,3 +1,4 @@
+import { modelEvent } from "../../usage/usage";
 import "server-only";
 import { createHash, randomUUID } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
@@ -81,7 +82,7 @@ export function createGenerationService(options: {
               config: profileConfig, profileId: config.profileId, environment,
               beforeRequest: async () => {
                 try {
-                  if (usage) await usage.reserve("model", "model", "generation");
+                  if (usage) return await modelEvent(usage, "generation");
                   else await budget!.reserveRequest(problem.runId, "model");
                 } catch (error) {
                   // 账本暂时记不了不是次数用完（同对话规划）。

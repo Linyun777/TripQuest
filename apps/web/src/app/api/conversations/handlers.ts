@@ -28,6 +28,7 @@ const json = (body: unknown, status = 200) =>
 
 const editSchema = z.strictObject({
   patch: draftPatchSchema,
+  selections: z.array(z.string().min(1).max(8192)).max(2).optional(),
   fingerprint: z.string().regex(/^[a-f0-9]{64}$/),
 });
 
@@ -161,7 +162,7 @@ export function createDraftHandler(options: WithUser<ConversationServiceOptions>
     }
     if (!parsed) return json({ status: "invalid_request" }, 400);
     try {
-      return reply(await service.editDraft(conversationId, parsed.patch, parsed.fingerprint));
+      return reply(await service.editDraft(conversationId, parsed.patch, parsed.fingerprint, parsed.selections));
     } catch {
       return json({ status: "unavailable" }, 503);
     }

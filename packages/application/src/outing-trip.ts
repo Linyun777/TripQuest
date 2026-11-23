@@ -2,8 +2,8 @@ import { z } from "zod";
 import type { ChinaDateTime } from "@tripquest/domain";
 import type { JourneyCity } from "./contracts";
 import type { DayDraftConfirmationSnapshot } from "./day-confirmation";
-import { planningTimeSchema } from "./planning-requirements";
-import { confirmRealDay, type InitialRealDayDraft, type RealDayRepository } from "./real-day";
+import { dayDeadlineSchema, planningTimeSchema } from "./planning-requirements";
+import { confirmRealDay, type CardVersion, type InitialRealDayDraft, type RealDayRepository } from "./real-day";
 import { toChinaDateTime } from "./runtime-values";
 import type { MobilityProvider } from "@tripquest/providers";
 import type { JourneyClock, JourneyIdGenerator } from "./contracts";
@@ -23,7 +23,8 @@ export const storedTripSchema = z.strictObject({
   /** 最近一次确认的跨天改动（重试时按它判断已经保存过）。 */
   lastChangeId: z.uuid().optional(),
   start: z.strictObject({ place: placeRef, at: planningTimeSchema.nullable() }),
-  end: z.strictObject({ place: placeRef, at: planningTimeSchema.nullable() }),
+  end: z.strictObject({ place: placeRef, at: dayDeadlineSchema.nullable() }),
+  endPolicy: z.enum(["last", "prefer", "must"]).optional(),
   /** V3.3：source 是 suggested 时是系统暂定的住处（用户没换过）。 */
   lodging: z.array(z.strictObject({
     night: dayNumber,
@@ -40,6 +41,7 @@ export const storedTripSchema = z.strictObject({
     arriveAt: planningTimeSchema,
     arriveDay: z.enum(["same", "next"]),
     estimated: z.boolean(),
+    estimateSide: z.enum(["arrival", "departure"]).optional(),
   })).max(6),
   /** 每天的各部分按时间先后：plan 指向那一段的一日行程（同一天第几段），transfer 指向上面的第几条交通。 */
   days: z.array(z.strictObject({
@@ -53,7 +55,7 @@ export const storedTripSchema = z.strictObject({
         from: text(80),
         to: text(80),
         departAt: planningTimeSchema,
-        arriveAt: planningTimeSchema,
+        arriveAt: dayDeadlineSchema,
       }),
     ])).min(1).max(7),
   })).min(1).max(7),
@@ -61,6 +63,7 @@ export const storedTripSchema = z.strictObject({
 export type StoredTrip = z.infer<typeof storedTripSchema>;
 
 export interface InitialTrip {
+  readonly cardVersion?: CardVersion;
   readonly tripId: string;
   /** 同一次生成只建一趟（重试按它幂等）。 */
   readonly generationId: string;
@@ -74,7 +77,7 @@ export interface InitialTrip {
 }
 export type TripSaveOutcome =
   | { readonly status: "saved" | "already_saved"; readonly tripId: string }
-  | { readonly status: "intent_conflict" };
+  | { readonly status: "intent_conflict" | "draft_changed" };
 
 export interface TripRepository {
   findTripCreation(generationId: string): Promise<{ tripId: string } | null>;
@@ -100,6 +103,7 @@ export interface TripSegment {
  * 任何一段过期、变化或查不到路线，整趟都不保存。
  */
 export async function confirmOuting(options: {
+  readonly cardVersion?: CardVersion;
   readonly generationId: string;
   readonly title: string;
   readonly details: StoredTrip;
@@ -119,10 +123,12 @@ export async function confirmOuting(options: {
   const collected = await collectSegments(options);
   if (!Array.isArray(collected)) return collected;
   const days = collected;
-  if (!days.length) return { status: "draft_changed" };
+  if (!options.enabled) return { status: "disabled" };
+  if (!days.length && (!options.details.transports.length || options.details.days.some((day) => day.parts.some((part) => part.kind === "plan")))) return { status: "draft_changed" };
   const dates = options.details.days.map((day) => day.date).sort();
-  const createdAt = days[0]!.journey.createdAt;
+  const createdAt = days[0]?.journey.createdAt ?? toChinaDateTime(options.clock.now());
   return options.repository.createTrip({
+    cardVersion: options.cardVersion,
     tripId: options.idGenerator.next("journey"),
     generationId: options.generationId,
     title: options.title.trim().slice(0, 80),
@@ -200,6 +206,7 @@ export function outingBaseIsCurrent(base: OutingChangeBase, current: OutingChang
 }
 
 export interface OutingChangeCommit {
+  readonly cardVersion?: CardVersion;
   readonly tripId: string;
   /** 这次改动的编号（重试按它幂等）。 */
   readonly changeId: string;
@@ -227,6 +234,7 @@ export interface OutingChangeRepository {
  * 省掉明显过期时的路线复查）。
  */
 export async function confirmOutingChange(options: {
+  readonly cardVersion?: CardVersion;
   readonly tripId: string;
   readonly changeId: string;
   readonly title: string;
@@ -248,6 +256,7 @@ export async function confirmOutingChange(options: {
   if (!Array.isArray(collected)) return collected;
   const now = options.clock.now();
   return options.repository.commitOutingChange({
+    cardVersion: options.cardVersion,
     tripId: options.tripId,
     changeId: options.changeId,
     base: options.base,

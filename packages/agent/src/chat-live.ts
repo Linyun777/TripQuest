@@ -10,18 +10,18 @@ export function createChatLiveModel(options: LiveModelOptions): ChatDecisionMode
     provider: transport.provider,
     model: transport.model,
     async decide(context, { signal, system }) {
+      let receipt;
       const content = serializeChatContext(context, CHAT_LIMITS.contextBytes);
       if (signal.aborted) throw new ChatRunError("timeout");
       // Reserve the daily budget outside the SDK, so a refusal reads as live_budget. A caller that
       // already knows why it failed (the ledger itself is unavailable) throws its own ChatRunError.
       try {
-        await beforeRequest?.();
+        receipt = await beforeRequest?.();
       } catch (error) {
         throw error instanceof ChatRunError ? error : new ChatRunError("live_budget");
       }
-      if (signal.aborted) throw new ChatRunError("timeout");
       // V3.4：专门 Agent 的提示词由引擎给；没给时按上下文拼（拆开前的做法）。
-      return transport.request(system ?? chatSystemPrompt(context), content, signal);
+      return transport.request(system ?? chatSystemPrompt(context), content, signal, receipt);
     },
   };
 }

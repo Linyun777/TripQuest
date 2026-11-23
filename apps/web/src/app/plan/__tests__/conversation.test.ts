@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
+import { issuePlaceToken } from "../../planning/new/place-token";
+import { fingerprint } from "@tripquest/application/fingerprint";
 import { emptyDraft } from "@tripquest/application/conversation";
 import { createChatRunner } from "@tripquest/agent/chat";
 import type { ChatDecisionModel, ChatKnowledgeBase, ChatRunnerDependencies } from "@tripquest/agent/chat";
@@ -147,7 +149,7 @@ describe("V2.1 conversation API", () => {
       dateLabel: "10月14日 周三（明天）",
       start: { status: "bound", name: "合成广场" },
       weather: { dayWeather: "小雨", wet: true },
-      missing: ["结束地点", "想去的地方或兴趣"],
+      missing: ["想去的地方或兴趣"],
     });
     // Only IDs and names were stored: no address, coordinates or weather numbers.
     const stored = JSON.stringify([...repository.messages.values()]);
@@ -209,7 +211,7 @@ describe("V2.1 conversation API", () => {
     expect(confirmed.card.missing).not.toContain("确认第 1 晚在车上过夜");
   });
 
-  it("V3.6: empty stations and a missing return are filled by code, said in the reply, and a guessed station can be swapped", async () => {
+  it("V3.6: empty stations are filled without adding a return the traveller did not request, said in the reply, and a guessed station can be swapped", async () => {
     const station = (externalId: string, name: string, cityAdcode: string, categoryCode = "150200") => ({
       ref: { provider: "amap", externalId }, name, cityAdcode, categoryCode,
       location: { longitude: 120.1, latitude: 30.2, coordinateSystem: "gcj02" as const },
@@ -246,12 +248,11 @@ describe("V2.1 conversation API", () => {
     const card = body.messages.at(-1).card;
     expect(card.outing.transports).toMatchObject([
       { day: 1, from: { name: "合成东站" }, to: { name: "海合站" }, suggested: { to: [{ placeId: "S-SEA-N", name: "海合北站" }] } },
-      { day: 2, from: { name: "海合站" }, to: { name: "合成东站" }, suggested: { ride: true } },
     ]);
     expect(card.missing).toEqual([]);
     expect(searched).toEqual(["火车站@330100", "火车站@990002"]);
     const reply = body.messages.find((message: { kind: string; role: string }) => message.kind === "text" && message.role === "assistant").text;
-    expect(reply).toMatch(/^好的，高铁的车站告诉我一下。\n\n回程按同样的方式估计（第 2 天 海合站 → 合成东站），可改。车站先按合成东站、海合站估计，卡片上可以换。$/);
+    expect(reply).toMatch(/^好的，高铁的车站告诉我一下。\n\n车站先按合成东站、海合站估计，卡片上可以换。$/);
     const swapped = await (await draft(post(`/api/conversations/${body.conversationId}/draft`, {
       patch: { choose: [{ target: "t1:to", externalId: "S-SEA-N" }] },
       fingerprint: card.fingerprint,
@@ -407,6 +408,28 @@ describe("V2.1 conversation API", () => {
     expect(body.messages.map((item: { kind: string }) => item.kind)).toEqual(["text", "notice"]);
     expect(body.messages[1].text).toContain("换个说法");
     expect(repository.conversations.get(body.conversationId)?.draft).toEqual(emptyDraft());
+  });
+
+  it("binds a signed search choice in the daily city and rejects changed or out-of-city choices", async () => {
+    const secret = "synthetic-test-signing-value-for-boundary-selection";
+    const { repository, draft } = setup([], undefined, undefined, {}, { environment: {
+      NODE_ENV: "development", PLANNING_PLACE_SOURCE: "amap", PLANNING_PLACE_TOKEN_SECRET: secret,
+      AMAP_WEB_SERVICE_KEY: "fixture-only",
+    } });
+    const card = await repository.createConversation({ id: crypto.randomUUID(), title: "合成选点", now: new Date(NOW) });
+    const token = (cityAdcode: string) => issuePlaceToken({
+      place: { ref: { provider: "amap", externalId: "SYN-START" }, name: "合成车站", cityAdcode,
+        location: { longitude: 120, latitude: 30, coordinateSystem: "gcj02" } }, evidence,
+    }, secret, "amap", NOW);
+    const edit = (selection: string) => draft(post("/api/conversations/" + card.id + "/draft", {
+      patch: { start: { candidate: "c1" } }, fingerprint: fingerprint(card.draft), selections: [selection],
+    }, undefined, "PATCH"), { params: Promise.resolve({ conversationId: card.id }) });
+    expect(await (await edit("invalid")).json()).toMatchObject({ status: "invalid", code: "unknown_candidate" });
+    expect(await (await edit(token("310000"))).json()).toMatchObject({ status: "invalid", code: "city_mismatch" });
+    expect((await edit(token("330100"))).status).toBe(200);
+    expect((await repository.findConversation(card.id))?.conversation.draft.start).toEqual({
+      status: "bound", externalId: "SYN-START", name: "合成车站", city: "330100",
+    });
   });
 
   it("edits the live card with the same checks as the chat, refusing stale or contradictory edits", async () => {

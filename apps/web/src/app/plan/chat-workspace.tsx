@@ -3,6 +3,7 @@
 import { ArrowLeft, Map as MapIcon } from "lucide-react";
 import Link from "next/link";
 import { useState, type ReactNode } from "react";
+import { BrandMark } from "../_ui/brand";
 import { Sheet } from "../_ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../_ui/tabs";
 import type { PlanningMapConfig } from "../journeys/map-config";
@@ -28,6 +29,7 @@ export function ChatWorkspace({
   outingHeader = null,
   mode = "daily",
   modeSwitch = null,
+  headerAction = null,
   onAdjust,
   onSuggest,
   live,
@@ -46,6 +48,8 @@ export function ChatWorkspace({
   /** V2.11：出游换一套主题变量；顶部的“日常 / 出游”切换。 */
   mode?: "daily" | "outing";
   modeSwitch?: ReactNode;
+  /** 顶栏右侧轻量快捷操作（如用户反馈入口）。 */
+  headerAction?: ReactNode;
   onAdjust?: () => void;
   /** V2.6: put a suggested message in the composer; the device's position for the panel. */
   onSuggest?: (text: string) => void;
@@ -86,17 +90,18 @@ export function ChatWorkspace({
   ) : planPanel;
   return (
     <div data-mode={mode} className="flex h-dvh flex-col bg-paper">
-      <header className="flex h-14 shrink-0 items-center gap-2 border-b border-line bg-paper/90 px-3 backdrop-blur sm:px-5">
+      <header className="glass-bar flex h-14 shrink-0 items-center gap-2 px-3 sm:px-5">
         <Link
           href="/"
           aria-label="返回首页"
-          className="grid size-9 place-items-center rounded-full text-ink-soft hover:bg-sunken"
+          className="grid size-9 place-items-center rounded-full text-ink-soft hover:bg-ink/[0.045]"
         >
           <ArrowLeft className="size-4" />
         </Link>
-        <span className="grid size-7 place-items-center rounded-lg bg-lake-600 text-[11px] font-bold text-white">TQ</span>
+        <BrandMark size="sm" />
         <h1 className="min-w-0 flex-1 truncate text-[15px] font-semibold">{title}</h1>
         {modeSwitch}
+        {headerAction}
         {(plan || mapStops.length > 0) && (
           <button
             type="button"

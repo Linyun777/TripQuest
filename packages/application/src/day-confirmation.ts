@@ -59,7 +59,7 @@ export function daySnapshotSource(snapshot: DayDraftConfirmationSnapshot): DaySn
 }
 const id = z.string().regex(/^[ap]\d{1,2}$/);
 const minute = z.number().int().min(0).max(1439);
-const windowSchema = z.strictObject({ startsAt: minute, endsAt: minute });
+const windowSchema = z.strictObject({ startsAt: minute, endsAt: z.number().int().min(1).max(1440) });
 const openingSchema = z.discriminatedUnion("status", [
   z.strictObject({ status: z.literal("unknown") }),
   z.strictObject({ status: z.literal("closed"), date: z.iso.date() }),
@@ -100,6 +100,7 @@ const inputSchema = z.strictObject({
   window: windowSchema,
   startPlaceId: id,
   endPlaceId: id,
+  endPolicy: z.enum(["last", "prefer", "must"]).optional(),
   places: z.array(domainPlaceSchema).min(1).max(10),
   activities: z.array(activitySchema).max(8),
   bufferMinutes: z.union([z.literal(5), z.literal(10)]),
@@ -141,6 +142,7 @@ export const dayDraftConfirmationSnapshotSchema = z.strictObject({
   activities: z.array(activityRecordSchema).min(1).max(14),
   selectedOrder: z.array(id).min(1).max(6),
   routes: z.array(routeSchema).min(1).max(7),
+  skippedReturn: routeSchema.optional(),
   draft: dayDraftSchema,
 });
 export type DayDraftConfirmationSnapshot = z.infer<typeof dayDraftConfirmationSnapshotSchema>;
@@ -165,12 +167,16 @@ export function createDayDraftConfirmationSnapshot(options: {
     ...activities.map((item) => item.activity.placeId),
   ]);
   const edges = new Set(options.draft.legs.map(edgeKey));
+  const skipped = options.problem.input.endPolicy === "prefer" && options.draft.endPlace.placeId !== options.problem.input.endPlaceId
+    ? options.routes.find((route) => route.fromPlaceId === options.draft.endPlace.placeId && route.toPlaceId === options.problem.input.endPlaceId)
+    : undefined;
   return freezeDayProblem(dayDraftConfirmationSnapshotSchema.parse({
     schemaVersion: DAY_CONFIRMATION_PROTOCOL,
     problem: options.problem,
     places: options.places.filter((item) => neededPlaces.has(item.placeId)),
     activities,
     selectedOrder: options.draft.activities.map((item) => item.activityId),
+    ...(skipped?.status === "known" ? { skippedReturn: skipped } : {}),
     routes: options.routes.filter((item) => edges.has(edgeKey(item))),
     draft: options.draft,
   }));
@@ -281,6 +287,12 @@ export function assertDaySnapshotIntegrity(
   invariant(new Set(snapshot.routes.map(edgeKey)).size === snapshot.routes.length);
   const edges = new Set(draft.legs.map(edgeKey));
   invariant(snapshot.routes.length === edges.size && snapshot.routes.every((route) => edges.has(edgeKey(route))));
+  if (snapshot.skippedReturn) {
+    const route = snapshot.skippedReturn;
+    invariant(problem.input.endPolicy === "prefer" && route.status === "known" &&
+      route.fromPlaceId === draft.endPlace.placeId && route.toPlaceId === problem.input.endPlaceId &&
+      route.fromPlaceId !== route.toPlaceId && fromSource(route.provider, route.sourceKind, source === "amap" ? undefined : version));
+  }
   for (const route of snapshot.routes) {
     if (route.status === "known") {
       invariant(fromSource(route.provider, route.sourceKind, source === "amap" ? undefined : version));
@@ -347,7 +359,8 @@ export function rebuildConfirmedDayDraft(
     validation,
     routeEvidence: evidence,
     createdAt: snapshot.draft.createdAt,
-    routes,
+    routes: snapshot.skippedReturn ? [...routes, snapshot.skippedReturn] : routes,
+    omitted: Object.fromEntries(snapshot.draft.omittedOptional.map((item) => [item.activityId, item.reason])),
     stays: shortenedStays(snapshot.activities, snapshot.draft.activities),
     // 推荐理由是签发时的文字说明，重算只更新可计算事实，保留原理由供指纹核对。
     reasons: Object.fromEntries(snapshot.draft.activities.flatMap((activity) =>

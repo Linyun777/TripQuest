@@ -4,6 +4,7 @@ import { toSavedDayView } from "@tripquest/application/saved-day";
 import { dayState } from "@tripquest/application/day-state";
 import { storedReplanView } from "@tripquest/application/day-replan";
 import { planningFixturePlaces } from "@tripquest/providers/planning-fixture";
+import { BrandMark } from "../_ui/brand";
 import { DayEditWorkspace } from "./day-edit-workspace";
 import { JourneyProgressWorkspace, type ProgressMember } from "./journey-progress";
 import { readPlanningMapConfig } from "./map-config";
@@ -43,9 +44,10 @@ export function GeneratedDayDetails({ journey }: { journey: JourneyDetails }) {
         <header className="mb-8 flex items-center justify-between gap-4">
           <Link
             href="/"
-            className="rounded-xl font-semibold focus-visible:outline-2 focus-visible:outline-[#236d55]"
+            className="flex items-center gap-2.5 rounded-xl font-semibold focus-visible:outline-2 focus-visible:outline-[#236d55]"
           >
-            TripQuest
+            <BrandMark size="md" />
+            <span>TripQuest</span>
           </Link>
           <span className="rounded-full border border-[#dce8e0] bg-white px-3 py-2 text-sm">
             查看 v{journey.version} · 当前 v{journey.currentVersion}

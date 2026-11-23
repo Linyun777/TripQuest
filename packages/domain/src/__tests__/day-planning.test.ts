@@ -137,3 +137,45 @@ describe("independent hand-calculated day examples", () => {
     expect(validateDayDraft(input, result, [{ ...routes[0], provider: "other" } as DayRoute, routes[1]]).verdict).toBe("rejected");
   });
 });
+
+describe("daily endpoints", () => {
+  const open = { fromPlaceId: "visit", toPlaceId: "visit", status: "same_place_assumption" } as const;
+  const lateNight = () => {
+    const { input, routes } = setup();
+    const night: DayPlanningInput = {
+      ...input, endPolicy: "last", window: { startsAt: 1398, endsAt: 1440 },
+      activities: [{ ...input.activities[0], staySource: "system_estimate" }],
+    };
+    return { night, routes: [...routes, open] };
+  };
+  it("arrives at 23:30 with no departure and refuses to erase user-specified dwell", () => {
+    const { night, routes } = lateNight();
+    const plan = schedule(night, routes);
+    expect(plan.activities[0]).toMatchObject({ startsAt: 1410, endsAt: 1410, openArrival: true });
+    expect(validateDayDraft(night, plan, routes).verdict).toBe("pending");
+    const hard = { ...night, activities: setup().input.activities };
+    expect(scheduleDay(hard, ["a"], routes).status).toBe("not_scheduled");
+    expect(validateDayDraft(hard, plan, routes).verdict).toBe("rejected");
+  });
+
+  it("prefers the return when feasible and needs evidence for a mandatory return", () => {
+    const { night, routes } = lateNight();
+    const prefer = { ...night, endPolicy: "prefer" as const };
+    expect(schedule(prefer, routes).activities[0].openArrival).toBe(true);
+    const earlier = { ...prefer, window: { startsAt: 600, endsAt: 1440 } };
+    expect(schedule(earlier, routes).legs.at(-1)?.toPlaceId).toBe("end");
+    const noReturn = routes.filter((leg) => leg.toPlaceId !== "end");
+    expect(schedule(earlier, noReturn).activities[0].openArrival).toBe(true);
+    expect(scheduleDay({ ...earlier, endPolicy: "must" }, ["a"], noReturn).status).toBe("not_scheduled");
+  });
+
+  it("rejects arrival at closing or midnight, including on an open end", () => {
+    const { night, routes } = lateNight();
+    const activity = night.activities[0];
+    const opening = { status: "known" as const, date: night.date, windows: [{ startsAt: 600, endsAt: 1410 }] };
+    const untilMidnight = { ...opening, windows: [{ startsAt: 600, endsAt: 1440 }] };
+    expect(schedule({ ...night, activities: [{ ...activity, opening: untilMidnight }] }, routes).activities[0].startsAt).toBe(1410);
+    expect(scheduleDay({ ...night, activities: [{ ...activity, opening }] }, ["a"], routes).status).toBe("not_scheduled");
+    expect(scheduleDay({ ...night, window: { startsAt: 1428, endsAt: 1440 } }, ["a"], routes).status).toBe("not_scheduled");
+  });
+});

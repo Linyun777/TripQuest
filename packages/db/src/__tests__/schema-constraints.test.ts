@@ -1,3 +1,4 @@
+import { readMigrationFiles } from "drizzle-orm/migrator";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { config } from "dotenv";
 import { fileURLToPath } from "node:url";
@@ -67,7 +68,7 @@ describe("S3.2 database level constraints", () => {
     const applied = await client.pool.query<{ count: string }>(
       "SELECT count(*)::text AS count FROM drizzle.__drizzle_migrations",
     );
-    expect(applied.rows[0]?.count, "eighteen migrations applied exactly once").toBe("18");
+    expect(Number(applied.rows[0]?.count)).toBe(readMigrationFiles({ migrationsFolder: fileURLToPath(new URL("../../drizzle", import.meta.url)) }).length);
 
     const currentIndex = await client.pool.query<{ indexdef: string }>(
       "SELECT indexdef FROM pg_indexes WHERE indexname = 'plan_versions_one_current_per_journey'",

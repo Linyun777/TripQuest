@@ -3,6 +3,7 @@
 import { Bookmark, BookOpen, ChevronDown, ExternalLink, Globe, Info, ListChecks, LoaderCircle, MapPin, TriangleAlert } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { BrandMark } from "../_ui/brand";
 import { Button } from "../_ui/button";
 import { cn } from "../_ui/cn";
 import { AdjustCard } from "./adjust-card";
@@ -640,15 +641,16 @@ function Message({ message, actions }: { message: ChatMessageView; actions: Mess
 function Assistant({ children, wide = false }: { children: ReactNode; wide?: boolean }) {
   return (
     <div className="flex gap-3">
-      <span
+      <BrandMark
+        size="sm"
+        shape="circle"
+        tone="ink"
         className={cn(
-          "mt-1 size-7 shrink-0 place-items-center rounded-full bg-ink text-[11px] font-bold text-white",
+          "mt-1",
           // 手机上宽卡片优先占满可用宽度，较宽屏幕再保留头像，避免挤压正文。
-          wide ? "hidden sm:grid" : "grid",
+          wide ? "hidden sm:block" : "block",
         )}
-      >
-        TQ
-      </span>
+      />
       <div className={cn("min-w-0", wide ? "flex-1" : "max-w-[85%]")}>{children}</div>
     </div>
   );

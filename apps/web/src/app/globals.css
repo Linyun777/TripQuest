@@ -1,51 +1,58 @@
 @import "tailwindcss";
 
 /*
- * V2.1 design tokens. One deep lake green carries actions and the brand; a warm sunset
- * accent marks what the agent is doing right now. Everything else is ink on warm paper.
+ * TripQuest Morandi × Translucent Glass design system:
+ * - Daily mode: Morandi Mist Slate-Teal (#547478) + oatmeal linen canvas (#eeece8) + almond gold (#c28d6b)
+ * - Outing mode: Morandi Dusty Terracotta-Rose (#9b6356) + warm rose-ash canvas (#efeae6) + wheat gold (#bc9654)
+ * - Multi-layer translucent frosted glass surfaces with crisp specular top edges.
  */
 @theme {
-  --font-sans: "PingFang SC", "HarmonyOS Sans SC", "Microsoft YaHei", ui-sans-serif, system-ui, sans-serif;
-  /* 标题用宋体，日常和出游一样（V2.12 验收时用户定）；正文还是上面的黑体。 */
-  --font-heading: "Songti SC", "Noto Serif SC", "Source Han Serif SC", "STSong", serif;
+  --font-sans: "PingFang SC", "SF Pro Text", "HarmonyOS Sans SC", "Microsoft YaHei", ui-sans-serif, system-ui, sans-serif;
+  --font-heading: "PingFang SC", "SF Pro Display", "HarmonyOS Sans SC", "Microsoft YaHei", ui-sans-serif, system-ui, sans-serif;
 
-  --color-paper: #f6f4ef;
-  --color-surface: #ffffff;
-  --color-sunken: #efece5;
-  --color-line: #e4e0d7;
-  --color-line-strong: #cfc9bc;
+  --color-paper: #eeece8;
+  --color-surface: #faf9f7;
+  --color-sunken: #e5e2dc;
+  --color-line: #dcd8d0;
+  --color-line-strong: #c6c0b6;
 
-  --color-ink: #17211d;
-  --color-ink-soft: #4a5751;
-  --color-ink-faint: #7f8a84;
+  --color-ink: #262b2d;
+  --color-ink-soft: #596265;
+  --color-ink-faint: #8b9396;
 
-  --color-lake-50: #eef6f3;
-  --color-lake-100: #d6ebe3;
-  --color-lake-200: #acd5c6;
-  --color-lake-500: #2f8a6f;
-  --color-lake-600: #1f7159;
-  --color-lake-700: #175a47;
-  --color-lake-900: #0d3429;
+  /* Morandi Slate-Teal (Daily primary) */
+  --color-lake-50: #e8eff0;
+  --color-lake-100: #d4e1e3;
+  --color-lake-200: #b4c9cc;
+  --color-lake-500: #6b8c90;
+  --color-lake-600: #547478;
+  --color-lake-700: #425d61;
+  --color-lake-900: #273a3d;
 
-  --color-sun-50: #fdf3ea;
-  --color-sun-100: #fae0c8;
-  --color-sun-500: #e07b39;
-  --color-sun-700: #a9521c;
+  /* Morandi Almond Ochre (Warm accent) */
+  --color-sun-50: #f5ece5;
+  --color-sun-100: #e9d7c9;
+  --color-sun-500: #c28d6b;
+  --color-sun-700: #8e5f42;
 
-  --color-rain-50: #eef3fb;
-  --color-rain-500: #4d78b8;
+  /* Morandi Mist Blue (Weather / transit) */
+  --color-rain-50: #eaeff5;
+  --color-rain-500: #6782a3;
 
-  --color-danger-50: #fbefec;
-  --color-danger-600: #b2402c;
+  /* Morandi Brick Clay (Error / alert) */
+  --color-danger-50: #f6eae8;
+  --color-danger-600: #a9534b;
 
-  --radius-card: 1.25rem;
-  --radius-field: 0.875rem;
+  --radius-card: 1.375rem;
+  --radius-field: 0.9375rem;
 
-  --shadow-card: 0 1px 2px rgb(23 33 29 / 0.04), 0 8px 24px -12px rgb(23 33 29 / 0.14);
-  --shadow-float: 0 2px 6px rgb(23 33 29 / 0.06), 0 24px 48px -20px rgb(23 33 29 / 0.28);
+  --shadow-card: 0 1px 2px rgb(38 43 45 / 0.04), 0 10px 28px -16px rgb(38 43 45 / 0.14);
+  --shadow-float: 0 2px 8px rgb(38 43 45 / 0.05), 0 22px 48px -20px rgb(38 43 45 / 0.22);
 
+  /* Emil Kowalski / Apple fluid easing curves */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
   --ease-out-soft: cubic-bezier(0.22, 1, 0.36, 1);
-  /* iOS-like drawer curve: sheets slide in and out with it. */
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
   --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
 }
 
@@ -53,41 +60,77 @@
   color-scheme: light;
 }
 
-/*
- * V2.11 出游主题（用户定的暖色旅行感）：沙色纸面、赤陶主色、琥珀色提醒。只换变量，组件不分叉；
- * 字体两种模式一样，出游只换颜色。
- * 出游的页面在外层加 data-mode="outing"。lake-* 是“主色”的名字，出游里换成赤陶色。
- */
-/* 弹层渲染在页面外层之外（挂在 body 上），body 跟着页面里的出游区域一起换变量。 */
-[data-mode="outing"],
-body:has([data-mode="outing"]) {
-  --color-paper: #f7efe4;
-  --color-surface: #fffaf3;
-  --color-sunken: #f0e5d6;
-  --color-line: #e8dccb;
-  --color-line-strong: #d6c5ae;
-
-  --color-ink: #2a1f17;
-  --color-ink-soft: #5c4a3c;
-  --color-ink-faint: #8a7766;
-
-  --color-lake-50: #fbefe7;
-  --color-lake-100: #f5d9c7;
-  --color-lake-200: #ebb79a;
-  --color-lake-500: #c8643a;
-  --color-lake-600: #b0532d;
-  --color-lake-700: #8c4023;
-  --color-lake-900: #4f230f;
-
-  --color-sun-50: #fbf3dc;
-  --color-sun-100: #f5e2a8;
-  --color-sun-500: #c99a1e;
-  --color-sun-700: #85600c;
+/* Mobile-native platform baseline */
+html {
+  -webkit-tap-highlight-color: transparent;
+  -webkit-text-size-adjust: 100%;
+  overscroll-behavior: none;
 }
 
-/* 页面外层之外（滚动回弹露出的部分）也用出游的纸色。 */
+/* Browser surfaces carry the Morandi palette */
+::selection {
+  background: var(--color-lake-100);
+  color: var(--color-ink);
+}
+
+input,
+textarea {
+  caret-color: var(--color-lake-600);
+}
+
+/* Prevent iOS Safari focus zoom on coarse touch pointers */
+@media (pointer: coarse) {
+  input,
+  textarea,
+  select {
+    font-size: 16px;
+  }
+}
+
+/* Eliminate 300ms tap delay and accidental long-press text selection on controls */
+button,
+a,
+[role="button"],
+[role="tab"],
+[role="radio"] {
+  touch-action: manipulation;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+
+/*
+ * 出游主题（Morandi Dusty Rose & Clay）：
+ * 烟熏蔷薇陶色 + 柔暖燕麦米灰 + 浅麦金，温柔高级的度假氛围。
+ */
+[data-mode="outing"],
 body:has([data-mode="outing"]) {
-  background: #f7efe4;
+  --color-paper: #efeae6;
+  --color-surface: #fbf9f7;
+  --color-sunken: #e6dfda;
+  --color-line: #ddd4cd;
+  --color-line-strong: #c8bcb3;
+
+  --color-ink: #2e2726;
+  --color-ink-soft: #685c5a;
+  --color-ink-faint: #988b88;
+
+  --color-lake-50: #f3e8e5;
+  --color-lake-100: #e8d4ce;
+  --color-lake-200: #d6b6ac;
+  --color-lake-500: #b57c6e;
+  --color-lake-600: #9b6356;
+  --color-lake-700: #7e4d42;
+  --color-lake-900: #4c2d27;
+
+  --color-sun-50: #f6efe1;
+  --color-sun-100: #eadbc0;
+  --color-sun-500: #bc9654;
+  --color-sun-700: #876832;
+}
+
+body:has([data-mode="outing"]) {
+  background: #efeae6;
 }
 
 body {
@@ -97,14 +140,85 @@ body {
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+  transition: background-color 420ms var(--ease-out), color 260ms ease;
 }
 
-/* 宋体字距收紧会挤，标题不跟 tracking-tight。 */
+[data-mode] {
+  transition: background-color 420ms var(--ease-out), color 260ms ease;
+}
+
 h1,
 h2,
 h3 {
   font-family: var(--font-heading);
-  letter-spacing: 0;
+  letter-spacing: -0.015em;
+}
+
+/*
+ * Apple-inspired translucent Morandi glass materials:
+ * balanced translucency + 14–16px optical blur (keeps blurred silhouettes of underlying text legible)
+ * + high saturation + luminous specular edge + subtle frosted grain.
+ */
+@layer components {
+  .glass-bar {
+    position: relative;
+    isolation: isolate;
+    background: color-mix(in srgb, var(--color-surface) 46%, transparent);
+    backdrop-filter: blur(8px) saturate(175%);
+    border-bottom: 1px solid rgb(255 255 255 / 0.65);
+    box-shadow:
+      inset 0 1px 0 rgb(255 255 255 / 0.8),
+      0 1px 0 rgb(38 43 45 / 0.05),
+      0 10px 28px -18px rgb(38 43 45 / 0.16);
+  }
+
+  .glass-bar::before {
+    content: "";
+    pointer-events: none;
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    opacity: 0.03;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+
+  .glass-dock {
+    background: color-mix(in srgb, var(--color-surface) 54%, transparent);
+    backdrop-filter: blur(12px) saturate(180%);
+    border: 1px solid rgb(255 255 255 / 0.78);
+    box-shadow:
+      inset 0 1px 0 rgb(255 255 255 / 0.92),
+      0 2px 8px rgb(38 43 45 / 0.06),
+      0 16px 36px -14px rgb(38 43 45 / 0.22);
+  }
+
+  .glass-card {
+    background: rgb(255 255 255 / 0.66);
+    backdrop-filter: blur(20px) saturate(155%);
+    border: 1px solid rgb(255 255 255 / 0.76);
+    box-shadow:
+      inset 0 1px 0 rgb(255 255 255 / 0.88),
+      0 1px 2px rgb(38 43 45 / 0.04),
+      0 16px 40px -20px rgb(38 43 45 / 0.16);
+  }
+
+  .glass-pill {
+    background: rgb(255 255 255 / 0.56);
+    backdrop-filter: blur(14px) saturate(150%);
+    border: 1px solid rgb(255 255 255 / 0.72);
+    box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.8), 0 2px 8px -4px rgb(38 43 45 / 0.08);
+  }
+}
+
+.morandi-cta {
+  background: linear-gradient(180deg, var(--color-lake-500) 0%, var(--color-lake-600) 100%);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.24),
+    0 8px 20px -10px color-mix(in srgb, var(--color-lake-700) 65%, transparent);
+}
+
+.morandi-cta:hover:not(:disabled) {
+  background: linear-gradient(180deg, var(--color-lake-600) 0%, var(--color-lake-700) 100%);
 }
 
 /* Times and minutes line up in timelines and cards. */
@@ -112,20 +226,31 @@ h3 {
   font-variant-numeric: tabular-nums;
 }
 
+.no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
 .journey-input {
   width: 100%;
   min-height: 48px;
   border: 1px solid var(--color-line);
   border-radius: var(--radius-field);
-  background: var(--color-surface);
+  background: rgb(255 255 255 / 0.76);
   padding: 0 16px;
   color: var(--color-ink);
   font-size: 16px;
+  transition: border-color 180ms ease, box-shadow 180ms ease, background-color 180ms ease;
 }
 
 .journey-input:focus-visible {
-  outline: 2px solid var(--color-lake-600);
-  outline-offset: 2px;
+  background: #ffffff;
+  border-color: var(--color-lake-500);
+  outline: 2px solid color-mix(in srgb, var(--color-lake-500) 35%, transparent);
+  outline-offset: 1px;
 }
 
 .journey-input[aria-invalid="true"] {
@@ -147,7 +272,34 @@ h3 {
   animation: shimmer 2.4s linear infinite;
 }
 
-/* Bottom sheet enter/exit (Radix sets data-state on open and close). */
+@keyframes skeleton-sweep {
+  from { background-position: 200% 0; }
+  to { background-position: -200% 0; }
+}
+
+.skeleton {
+  background: linear-gradient(90deg, var(--color-sunken) 25%, var(--color-surface) 50%, var(--color-sunken) 75%);
+  background-size: 200% 100%;
+  animation: skeleton-sweep 1.8s linear infinite;
+}
+
+/* Gentle breathing drift for Morandi watercolor backdrop (GPU transform-only, paused under reduced-motion). */
+@keyframes morandi-float {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+  50% { transform: translate3d(14px, -10px, 0) scale(1.04); }
+}
+
+.morandi-drift {
+  animation: morandi-float 16s ease-in-out infinite;
+  will-change: transform;
+}
+
+.morandi-drift-alt {
+  animation: morandi-float 20s ease-in-out infinite reverse;
+  will-change: transform;
+}
+
+/* Bottom sheet & side drawer enter/exit (Radix sets data-state on open and close). */
 @keyframes sheet-up {
   from { transform: translateY(100%); }
   to { transform: translateY(0); }
@@ -155,6 +307,14 @@ h3 {
 @keyframes sheet-down {
   from { transform: translateY(0); }
   to { transform: translateY(100%); }
+}
+@keyframes drawer-in-right {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+@keyframes drawer-out-right {
+  from { transform: translateX(0); }
+  to { transform: translateX(100%); }
 }
 @keyframes fade-in {
   from { opacity: 0; }
@@ -164,23 +324,47 @@ h3 {
   from { opacity: 1; }
   to { opacity: 0; }
 }
+
 /* Closing answers the user at once: the same drawer curve, faster than opening, never ease-in. */
-.sheet-content[data-state="open"] { animation: sheet-up 380ms var(--ease-drawer); }
+.sheet-content[data-state="open"] { animation: sheet-up 340ms var(--ease-drawer); }
 .sheet-content[data-state="closed"] { animation: sheet-down 200ms var(--ease-drawer); }
-.sheet-overlay[data-state="open"] { animation: fade-in 240ms var(--ease-out-soft); }
-.sheet-overlay[data-state="closed"] { animation: fade-out 200ms var(--ease-out-soft); }
+.sheet-overlay[data-state="open"] { animation: fade-in 220ms var(--ease-out); }
+.sheet-overlay[data-state="closed"] { animation: fade-out 180ms var(--ease-out); }
+
+@media (min-width: 768px) {
+  .sheet-side[data-state="open"] { animation: drawer-in-right 300ms var(--ease-drawer); }
+  .sheet-side[data-state="closed"] { animation: drawer-out-right 180ms var(--ease-drawer); }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .nav-glass,
+  .glass-bar,
+  .glass-dock,
+  .glass-card,
+  .glass-pill {
+    background: var(--color-surface) !important;
+    backdrop-filter: none !important;
+  }
+}
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     scroll-behavior: auto !important;
     transition-duration: 0.01ms !important;
     animation-duration: 0.01ms !important;
-    /* A looping animation squeezed to 0.01ms shows a random frame each paint: play it once. */
     animation-iteration-count: 1 !important;
+  }
+  .morandi-drift,
+  .morandi-drift-alt {
+    animation: none;
   }
   .shimmer-text {
     animation: none;
     color: var(--color-ink-soft);
     background: none;
+  }
+  .skeleton {
+    animation: none;
+    background: var(--color-sunken);
   }
 }

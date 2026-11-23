@@ -1,3 +1,4 @@
+import { TRANSFER_BUFFER_MINUTES } from "@tripquest/application/transfer-day";
 import "server-only";
 import { outingReview, type OutingReviewOutcome } from "@tripquest/agent/outing-graph";
 import type { JudgeRequest } from "@tripquest/agent/outing-judge";
@@ -150,7 +151,7 @@ export async function outingInput(
   const outing = draft.outing!;
   const bound = (place: DraftPlace | null | undefined) => (place?.status === "bound" ? place : null);
   const named = [
-    draft.start, draft.end, ...outing.lodging.map((night) => night.place),
+    draft.start, draft.end, ...Object.values(outing.dayBoundaries ?? {}).flatMap((entry) => [entry.start, entry.end]), ...outing.lodging.map((night) => night.place),
     ...outing.transports.flatMap((item) => [item.from, item.to]), ...draft.visits.map((visit) => visit.place),
   ].flatMap((place) => (bound(place) ? [bound(place)!] : []));
   const ids = [...new Set(named.map((place) => place.externalId))];
@@ -169,19 +170,24 @@ export async function outingInput(
     evidence: { provider: "amap", sourceKind: "live", retrievedAt, attribution: "高德地图" },
   });
   const days = outingDays(outing);
+  const start = outing.dayBoundaries?.[outing.dates!.from]?.start ?? draft.start;
   return {
     status: "ok",
     input: {
       dates: outing.dates!,
       dailyWindow: outing.dailyWindow,
-      start: { place: selection(draft.start), at: outing.startAt },
-      end: { place: selection(draft.end ?? draft.start), at: outing.endAt },
+      endPolicy: draft.endPolicy,
+      boundaries: Object.fromEntries(Object.entries(outing.dayBoundaries ?? {}).map(([date, {start, end, ...times}]) => [date, {
+        ...times, ...(start ? {start: selection(start)} : {}), ...(end ? {end: selection(end)} : {}),
+      }])) ,
+      start: { place: selection(start), at: outing.startAt },
+      end: { place: selection(draft.end ?? start), at: outing.endAt },
       lodging: Array.from({ length: Math.max(0, days - 1) }, (_, index) => {
         const night = outing.lodging.find((item) => item.night === index + 1);
         return night?.onBoard ? "onBoard" as const : bound(night?.place) ? selection(night!.place) : null;
       }),
       transports: outing.transports.map((item) => ({
-        day: item.day,
+        id: item.id, day: item.day,
         mode: item.mode,
         from: selection(item.from),
         to: selection(item.to),
@@ -312,10 +318,12 @@ export function createOutingGeneration(dependencies: {
 
     // 继续或重排沿用最近一次生成；其他天用过的推荐地点排除掉。
     const earlier = latestGeneration(found.messages);
-    const again = !!input.days?.length && !!earlier;
+    const staleDays = earlier ? changedBoundaryDays(draft, earlier.days) : [];
+    const requested = [...new Set([...(input.days ?? []), ...staleDays])];
+    const again = requested.length > 0 && !!earlier;
     const generationId = again ? earlier!.generationId : randomUUID();
     const exclude = again
-      ? earlier!.days.filter((body) => !input.days!.includes(body.day)).flatMap((body) => discoveredIds(body))
+      ? earlier!.days.filter((body) => !requested.includes(body.day)).flatMap((body) => discoveredIds(body))
       : [];
     const title = found.conversation.title;
     let messageCount = found.conversation.messageCount;
@@ -346,7 +354,7 @@ export function createOutingGeneration(dependencies: {
       ...(judge ? { judge } : {}),
     }, {
       signal,
-      ...(again ? { days: input.days, exclude } : {}),
+      ...(again ? { days: requested, exclude } : {}),
       onReviewStart: () => step("正在检查整趟安排"),
       onReview: (outcome) => {
         review = outcome;
@@ -360,7 +368,7 @@ export function createOutingGeneration(dependencies: {
       onDay: async (generated) => {
         // V3.5：用户点了停止（或超时）之后没排出来的天不存：那不是“规划服务出错”，是没排；排好的天照常留着。
         if (signal.aborted && generated.result.status !== "draft") return;
-        const built = await outingDayMessage(generated, generationId, `${title} · 第 ${generated.day} 天`.slice(0, 80), dependencies);
+        const built = await outingDayMessage(generated, generationId, `${title} · 第 ${generated.day} 天`.slice(0, 80), dependencies, draft);
         const message: NewMessage = { role: "assistant", kind: "outing_day", body: built.body };
         const appended = await store.appendTurn({
           conversationId, expectedCount: messageCount, messages: [message], now: new Date(dependencies.now()), newId: randomUUID,
@@ -623,6 +631,31 @@ export function latestGeneration(messages: readonly StoredMessage[]) {
   return { generationId: last.body.generationId, days: [...byDay.values()].sort((a, b) => a.day - b.day) };
 }
 
+/** 只绑定影响当天排程的输入，逐日修改后独立日期的规划和已确认事实仍可复用。 */
+function boundaryFingerprint(draft: RequirementsDraft, day: number) {
+  const outing = draft.outing!;
+  const date = outing.dates && new Date(Date.parse(outing.dates.from) + (day - 1) * 86400000).toISOString().slice(0, 10);
+  const override = date ? outing.dayBoundaries?.[date] : undefined;
+  const final = day === outingDays(outing);
+  return fingerprint({
+    date, start: override?.start ?? (day === 1 ? draft.start : null),
+    startsAt: override?.startsAt ?? (day === 1 ? outing.startAt : null) ?? outing.dailyWindow.startsAt,
+    end: override?.end ?? (final ? draft.end : null),
+    endsAt: override?.endsAt ?? (final ? outing.endAt : null) ?? outing.dailyWindow.endsAt,
+    policy: override?.endPolicy ?? (final ? draft.endPolicy : draft.endPolicy ? "last" : undefined),
+    previousNight: override?.start ? null : outing.lodging.find((night) => night.night === day - 1 && night.source !== "suggested")?.place,
+    rides: outing.transports.filter((ride) => ride.day === day || (ride.day === day - 1 && ride.arriveDay === "next") ||
+      (ride.day === day + 1 && ride.departAt && Number(ride.departAt.slice(0, 2)) * 60 + Number(ride.departAt.slice(3)) < TRANSFER_BUFFER_MINUTES[ride.mode])),
+  });
+}
+
+export function changedBoundaryDays(draft: RequirementsDraft, previous: readonly OutingDayBody[]) {
+  return previous.filter((day) => day.boundaryFingerprint
+    ? day.boundaryFingerprint !== boundaryFingerprint(draft, day.day)
+    : !!draft.manualBoundaries?.length || !!draft.outing?.dayBoundaries || draft.outing?.transports.some((ride) => ride.manualTicket)
+  ).map((day) => day.day);
+}
+
 /** 这一天按兴趣新找到的地点（跨天不重复用）。 */
 function discoveredIds(body: OutingDayBody): string[] {
   return body.parts.flatMap((part) => (part.kind === "plan" ? part.plan.stops.filter((stop) => stop.role === "discovered").map((stop) => stop.externalId) : []));
@@ -634,9 +667,10 @@ async function outingDayMessage(
   generationId: string,
   title: string,
   dependencies: Parameters<typeof createOutingGeneration>[0],
+  draft: RequirementsDraft,
 ): Promise<{ body: OutingDayBody; view: Omit<OutingDayView, "id">; receipts: OutingReceipt[] }> {
   const { result } = generated;
-  const base = { generationId, day: generated.day, date: generated.date, title, tripId: null };
+  const base = { generationId, boundaryFingerprint: boundaryFingerprint(draft, generated.day), day: generated.day, date: generated.date, title, tripId: null };
   if (result.status === "failed" && dependencies.environment().NODE_ENV === "development") {
     // 只记录错误代码，不输出地点或对话。
     console.warn(`[outing] day ${generated.day} segment ${result.segment} failed: ${result.code}`);
@@ -654,9 +688,15 @@ async function outingDayMessage(
   const views: OutingDayPartView[] = [];
   const receipts: OutingReceipt[] = [];
   let failed = false;
+  let rideIndex = 0;
   for (const part of result.parts) {
     if (part.kind === "transfer") {
+      const ride = generated.frame.transfers[rideIndex++]?.transfer;
+      const estimateSide = ride?.departAt && !ride.arriveAt ? "arrival" as const :
+        ride?.arriveAt && !ride.departAt ? "departure" as const : undefined;
       const item = {
+        ...(ride?.id ? { rideId: ride.id } : {}),
+        ...(estimateSide ? { estimateSide } : {}),
         kind: "transfer" as const, mode: part.mode, from: part.from.slice(0, 80), to: part.to.slice(0, 80),
         departAt: clock(part.departAt), arriveAt: clock(part.arriveAt), nextDay: part.nextDay, estimated: part.estimated,
       };
@@ -720,6 +760,8 @@ export function createOutingSave(dependencies: {
     const { draft } = found.conversation;
     const latest = latestGeneration(found.messages);
     if (!latest || latest.generationId !== input.generationId || draft.mode !== "outing" || !draft.outing) return { status: "not_found" };
+    const stale = changedBoundaryDays(draft, latest.days);
+    if (stale.length) return { status: "draft_changed", day: stale[0] };
     const total = outingDays(draft.outing);
     if (latest.days.length !== total || latest.days.some((body) => body.status !== "draft")) return { status: "incomplete" };
     const now = dependencies.now();
@@ -751,6 +793,7 @@ export function createOutingSave(dependencies: {
       }
     }
     const result = await confirmOuting({
+      cardVersion: { conversationId, fingerprint: fingerprint(draft) },
       generationId: input.generationId,
       title: found.conversation.title,
       details: tripDetails(draft, latest.days),
@@ -830,19 +873,37 @@ function tripDetails(draft: RequirementsDraft, days: readonly OutingDayBody[]): 
     parts: body.parts.flatMap((part): StoredTrip["days"][number]["parts"] => {
       if (part.kind === "plan") return [{ kind: "plan", part: part.segment }];
       if (part.kind === "connect") return [{ kind: "connect", from: part.from, to: part.to, departAt: part.departAt, arriveAt: part.arriveAt }];
-      const given = outing.transports.find((item) => item.day === body.day && ref(item.from)?.name === part.from && ref(item.to)?.name === part.to);
+      const given = outing.transports.find((item) => part.rideId ? item.id === part.rideId :
+        item.day === body.day && ref(item.from)?.name === part.from && ref(item.to)?.name === part.to);
       if (!given) return [];
       transports.push({
         day: body.day, mode: part.mode, from: ref(given.from)!, to: ref(given.to)!, departAt: part.departAt, arriveAt: part.arriveAt,
         arriveDay: given.arriveDay, estimated: part.estimated,
+        ...(part.estimateSide ? { estimateSide: part.estimateSide } : {}),
       });
       return [{ kind: "transfer", transport: transports.length - 1 }];
     }),
   }));
+  const first = outing.dayBoundaries?.[outing.dates!.from];
+  const last = outing.dayBoundaries?.[outing.dates!.to];
+  const start = ref(first?.start ?? draft.start)!;
+  const tail = [...structure].reverse().flatMap((day) => [...day.parts].reverse().map((part) => ({ day: day.day, part }))).at(0);
+  let end = ref(last?.end ?? draft.end) ?? start;
+  if (tail?.part.kind === "connect" && !ref(last?.end ?? draft.end)) {
+    const arrivalName = tail.part.to;
+    end = transports.find((ride) => ride.to.name === arrivalName)?.to ?? end;
+  }
+  if (tail?.part.kind === "transfer") end = transports[tail.part.transport].to;
+  if (tail?.part.kind === "plan") {
+    const segment = tail.part.part;
+    const plan = days.find((day) => day.day === tail.day)?.parts.find((part) => part.kind === "plan" && part.segment === segment);
+    if (plan?.kind === "plan") end = plan.plan.end;
+  }
   return {
     schemaVersion: "trip.v1",
-    start: { place: ref(draft.start)!, at: outing.startAt },
-    end: { place: ref(draft.end ?? draft.start)!, at: outing.endAt },
+    start: { place: start, at: first?.startsAt ?? outing.startAt },
+    end: { place: end, at: last?.endsAt ?? outing.endAt },
+    endPolicy: draft.endPolicy,
     lodging: outing.lodging.map((night) => ({
       night: night.night,
       place: night.onBoard ? null : ref(night.place),
@@ -958,7 +1019,7 @@ export function createOutingChangeService(dependencies: Parameters<typeof create
 }) {
   async function plan(
     conversationId: string,
-    input: { readonly expectedCount: number; readonly request: OutingChangeRequest | AdoptRequest },
+    input: { readonly expectedCount: number; readonly request: OutingChangeRequest | AdoptRequest | { boundaries: true } },
     emit: (event: OutingChangeEvent) => void,
     signal: AbortSignal,
   ): Promise<void> {
@@ -985,7 +1046,11 @@ export function createOutingChangeService(dependencies: Parameters<typeof create
     // V3.2：保存之后采纳审查建议，卡片由代码按建议改好，和用户说的改动走同一套重排、确认。
     const adopting = "adopt" in input.request ? input.request.adopt : null;
     let request: OutingChangeRequest | AdoptedChange;
-    if ("adopt" in input.request) {
+    if ("boundaries" in input.request) {
+      const affected = changedBoundaryDays(draft, latestGeneration(found.messages)?.days ?? []);
+      if (!affected.length) return refuse("incomplete", "每天的起终点、时段和车次与已保存方案一致。");
+      request = { adopted: { draft, affected, note: "按卡片上的起终点、时段和车次调整受影响的日期" } };
+    } else if ("adopt" in input.request) {
       const fix = pendingSuggestion(found.messages, input.request.adopt);
       if (!fix) return refuse("not_found", "这条建议已经处理过了。");
       const adopted = adoptedDraft(draft, fix);
@@ -1033,13 +1098,13 @@ export function createOutingChangeService(dependencies: Parameters<typeof create
     } else {
       const days: OutingDayBody[] = [];
       for (const generated of result.generated) {
-        const built = await outingDayMessage(generated, earlier.generationId, `${found.conversation.title} · 第 ${generated.day} 天`.slice(0, 80), dependencies);
+        const built = await outingDayMessage(generated, earlier.generationId, `${found.conversation.title} · 第 ${generated.day} 天`.slice(0, 80), dependencies, result.draft);
         days.push(built.body);
         receipts = [...receipts, ...built.receipts];
       }
       const skip = result.skipToday ? todayActivity(saved, draft, result.skipToday) : undefined;
       const body: OutingChangeBody = {
-        changeId: randomUUID(),
+        changeId: randomUUID(), cardFingerprint: fingerprint(draft),
         tripId: saved.tripId,
         note: result.note.slice(0, 80),
         base: { tripVersion: base.tripVersion, journeys: [...base.journeys] },
@@ -1112,7 +1177,9 @@ export function createOutingChangeService(dependencies: Parameters<typeof create
     // 出游结构：没改的天沿用现在的，改的天换成新的。
     const current = latestGeneration(found.messages)!.days;
     const merged = current.map((day) => body.days.find((item) => item.day === day.day) ?? day);
+    if (body.cardFingerprint && body.cardFingerprint !== fingerprint(found.conversation.draft)) return { status: "stale" };
     const result = await confirmOutingChange({
+      cardVersion: { conversationId, fingerprint: fingerprint(found.conversation.draft) },
       tripId: body.tripId,
       changeId: body.changeId,
       title: found.conversation.title,
@@ -1144,12 +1211,14 @@ export function createOutingChangeService(dependencies: Parameters<typeof create
     // 出游已经写进去了，对话必须跟上：复核路线的这几秒里对话有了新消息（别的页面发了一条）就按最新的条数再写；
     // 一直写不进去就报暂时失败，页面重试时出游回“已保存”、这里再补（不能回“已保存”却让对话停在旧的各天和卡片上）。
     let expectedCount = found.conversation.messageCount;
+    const original = fingerprint(found.conversation.draft);
+    let includeDraft = true;
     for (let attempt = 0; ; attempt += 1) {
       const appended = await store.appendTurn({
         conversationId,
         expectedCount,
         messages,
-        draft: body.draft,
+        ...(includeDraft ? { draft: body.draft, expectedDraftFingerprint: original } : {}),
         ...(first ? { journeyId: first.journeyId } : {}),
         now: new Date(now),
         newId: randomUUID,
@@ -1160,6 +1229,7 @@ export function createOutingChangeService(dependencies: Parameters<typeof create
       // 同一个改动的另一次确认已经写过了。
       if (latest.messages.some((item) => item.kind === "outing_day" && item.body.fromChange === body.changeId)) break;
       expectedCount = latest.conversation.messageCount;
+      includeDraft = fingerprint(latest.conversation.draft) === original;
     }
     return { status: result.status };
   }
@@ -1233,7 +1303,8 @@ function storedPlanCard(body: PlanBody, live: boolean): PlanCardView {
     stops: body.stops.map((stop, index) => ({
       key: `stop-${index}`,
       startsAt: stop.startsAt,
-      endsAt: stop.endsAt,
+      endsAt: stop.endsAt ?? stop.startsAt,
+      openArrival: stop.openArrival,
       name: stop.name,
       role: stop.role,
       ...(stop.reason ? { reason: stop.reason } : {}),

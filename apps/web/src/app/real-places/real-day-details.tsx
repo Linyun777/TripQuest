@@ -14,8 +14,10 @@ import { readPlanningMapConfig } from "../journeys/map-config";
 import { createUserUsage, meteredAmap } from "../usage/usage";
 import { ArrowLeft, MessageSquare } from "lucide-react";
 import { Badge } from "../_ui/badge";
+import { BrandMark } from "../_ui/brand";
 import { Button } from "../_ui/button";
 import { Card } from "../_ui/card";
+import { FeedbackTrigger } from "../_ui/feedback-sheet";
 import { PlanTimeline } from "../plan/plan-card";
 import { PlanMap } from "../plan/plan-map";
 import { freeTime, type LegView, type MapStop, type PlanCardView } from "../plan/view-models";
@@ -102,24 +104,35 @@ export async function RealDayDetails({
 
   return (
     <div className="min-h-dvh bg-paper">
-      <header className="flex h-14 items-center gap-2 border-b border-line px-3 sm:px-5">
+      <header className="glass-bar sticky top-0 z-20 flex h-14 items-center gap-2 px-3 sm:px-5">
         <Link
           href="/"
           aria-label="返回首页"
-          className="grid size-9 place-items-center rounded-full text-ink-soft hover:bg-sunken"
+          className="grid size-9 place-items-center rounded-full text-ink-soft hover:bg-ink/[0.045]"
         >
           <ArrowLeft className="size-4" />
         </Link>
-        <span className="grid size-7 place-items-center rounded-lg bg-lake-600 text-[11px] font-bold text-white">TQ</span>
+        <BrandMark size="sm" />
         <span className="text-[15px] font-semibold">我的行程</span>
-        {conversationId && (
-          <Button asChild size="sm" variant="secondary" className="ml-auto">
-            <Link href={`/plan/${conversationId}`}>
-              <MessageSquare />
-              回到对话
-            </Link>
-          </Button>
-        )}
+        <div className="ml-auto flex items-center gap-1.5">
+          <FeedbackTrigger
+            variant="header"
+            context={{
+              pagePath: `/journeys/${journey.journeyId}`,
+              contextLabel: `行程详情 · 第 ${journey.version} 版`,
+              conversationId,
+              journeyId: journey.journeyId,
+            }}
+          />
+          {conversationId && (
+            <Button asChild size="sm" variant="secondary">
+              <Link href={`/plan/${conversationId}`}>
+                <MessageSquare />
+                回到对话
+              </Link>
+            </Button>
+          )}
+        </div>
       </header>
 
       <main className="mx-auto max-w-5xl px-4 py-8 sm:px-8">
@@ -255,6 +268,7 @@ function toPlanView(
       key: item.record.activity.activityId,
       startsAt: clock(item.startsAt),
       endsAt: clock(item.endsAt),
+      openArrival: item.openArrival,
       name: placeName(item.record.activity.placeId),
       role: item.record.activity.role,
       travelBefore: view(legInto(index + 1), item.arrivalMode ?? "walking"),
@@ -292,7 +306,7 @@ function toMapStops(
     stop("start", "起", "start", details.context.startPlaceId),
     ...details.activities.map((item, index) =>
       stop(item.record.activity.activityId, String(index + 1), "stop", item.record.activity.placeId)),
-    stop("end", "终", "end", details.context.endPlaceId),
+    ...(details.activities.at(-1)?.openArrival ? [] : [stop("end", "终", "end", details.context.endPlaceId)]),
   ];
 }
 

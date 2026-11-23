@@ -5,7 +5,12 @@ export interface MapOverlay {
   setPosition?(position: [number, number]): void;
   on(type: string, listener: () => void): void;
 }
+export interface MapClickEvent {
+  lnglat: { getLng(): number; getLat(): number };
+}
 export interface AmapInstance {
+  on(type: "click", listener: (event: MapClickEvent) => void): void;
+  off(type: "click", listener: (event: MapClickEvent) => void): void;
   on(type: string, listener: () => void): void;
   off(type: string, listener: () => void): void;
   add(overlays: MapOverlay[]): void;

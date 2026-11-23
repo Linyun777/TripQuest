@@ -22,7 +22,7 @@ import { dayLimits, dayOperation } from "./day-runtime";
 import { DayToolExecutor, type DayToolSnapshot } from "./day-tools";
 import { assertLocalTracingOnly } from "./tracing";
 import { inAgent } from "./agents/run-agent";
-import { currentRun } from "./runs";
+import { currentRun, timedTool, withRepair } from "./runs";
 
 const replySchema = z.object({
   decision: z.unknown(),
@@ -50,7 +50,7 @@ export function createDayPlanningRunner(dependencies: DayRunnerDependencies): Da
           runId: problem.runId, counts: { model: 0, searches: 0, tries: 0, routes: 0, semanticRepairs: 0 },
           elapsedMs: 0, usage: null, status: "failed", code: "internal_error",
         }),
-        attributes: { date: problem.requirements.date },
+        attributes: { date: problem.requirements.date, modelMode: dependencies.model.mode },
       },
       async (run) => {
         const result = await runDay(problem, options, dependencies, limits);
@@ -163,7 +163,10 @@ async function runDay(
       try {
         raw = await dayOperation({
           signal: controller.signal, timeoutMs: limits.modelMs,
-          operation: (signal) => dependencies.model.decide(context, { signal }),
+          operation: (signal) =>
+            withRepair("decision", context.feedback?.code, () =>
+              dependencies.model.decide(context, { signal }),
+            ),
         });
       } catch (error) {
         if (error instanceof DecisionModelError && error.metadata?.usage) {
@@ -195,8 +198,10 @@ async function runDay(
       if (invalid) {
         // 模型接收完整修正建议；诊断记录只保留最近的短提示码，控制体积并避免保存上下文正文。
         run = { ...run, hints: [...(run.hints ?? []), `${parsed.data.action}:${invalid}`.slice(0, 80)].slice(-10) };
-        currentRun()?.step("repair", parsed.data.action, { hint: invalid.slice(0, 80) });
-        if (counts.semanticRepairs >= limits.semanticRepairs) throw new DayRunError("semantic_invalid");
+        if (counts.semanticRepairs >= limits.semanticRepairs) {
+          currentRun()?.step("check", parsed.data.action, { code: "semantic_invalid" });
+          throw new DayRunError("semantic_invalid");
+        }
         counts.semanticRepairs += 1;
         return { pending: undefined, action: undefined, feedback: { code: invalid }, hints: run.hints };
       }
@@ -209,8 +214,12 @@ async function runDay(
       if (!action) throw new DayRunError("internal_error");
       let result: DayPlanningResult | undefined;
       switch (action.action) {
-        case "search_places": await tools.search(action); break;
-        case "try_itinerary": await tools.tryItinerary(action); break;
+        case "search_places":
+          await timedTool(action.action, () => tools.search(action));
+          break;
+        case "try_itinerary":
+          await timedTool(action.action, () => tools.tryItinerary(action));
+          break;
         case "finish": {
           const draft = tools.finish(action.attemptId, action.reasons);
           result = {

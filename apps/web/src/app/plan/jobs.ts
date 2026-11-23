@@ -153,8 +153,17 @@ export async function startJob(
     let writes = Promise.resolve();
     /** 发过结束事件没有（停止时任务自己没发，就补一条“已停止”）。 */
     let ended = false;
+    let result: "ok" | "none" | "failed" | "cancelled" = "ok";
     const emit = (event: JobEvent) => {
       if (TERMINAL.has(event.type)) ended = true;
+      if (event.type === "day") {
+        const day = event.message as { status?: string } | undefined;
+        if (day?.status === "failed") result = "failed";
+        if (day?.status === "no_plan" && result === "ok") result = "none";
+      }
+      if (event.outcome === "no_plan") result = "none";
+      if (event.type === "refused" || event.outcome === "failed") result = "failed";
+      if (event.outcome === "cancelled") result = "cancelled";
       send(event);
       const shared = withoutReceipts(event);
       live.events.push(shared);
@@ -170,7 +179,7 @@ export async function startJob(
       await traced({ trigger: TRIGGERS[input.kind], userId: options.userId }, async (root) => {
         writes = writes.then(() => repository.setRootRun(job.id, root.id)).catch(() => {});
         await run(emit, signal);
-      });
+      }, () => ({ status: signal.aborted ? "cancelled" : result }));
       if (controller.signal.aborted) status = "cancelled";
       if (status === "cancelled" && !ended) emit({ type: "refused", status: "cancelled", message: "已停止。" });
     } catch (error) {

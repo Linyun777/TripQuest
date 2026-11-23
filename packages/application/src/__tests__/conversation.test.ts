@@ -202,12 +202,13 @@ describe("V2.4 short trips", () => {
     });
     // Waiting only for the device location; no end place is asked for.
     expect(draftMissing(draft.draft)).toEqual(["允许定位（或告诉我出发地点）"]);
-    // What the user said stays; going back to a day plan asks for an end again.
+    // Both modes keep an open end on new cards; legacy cards still ask for their endpoint.
     const evening = applyDraftPatch(emptyDraft(), { mode: "short", endsAt: "20:00" }, new Map(), { nowMs: now });
     expect(evening.status === "ok" && evening.draft.endsAt).toBe("20:00");
     const day = apply(draft.draft, { mode: "day" });
     expect(day).not.toHaveProperty("mode");
-    expect(draftMissing(day)).toContain("结束地点");
+    expect(draftMissing(day)).not.toContain("结束地点");
+    expect(draftMissing({ ...day, endPolicy: undefined })).toContain("结束地点");
   });
 
   it("V2.5: a later start today is kept; one already past starts now", () => {
@@ -369,5 +370,32 @@ describe("V2.11 a ride can be given by its date", () => {
     expect(added.status === "ok" && added.draft.outing!.transports.map((ride) => ride.day)).toEqual([4]);
     expect(applyDraftPatch(outing, { addTransports: [{ date: "2026-11-02", mode: "train" }] })).toEqual({ status: "invalid", code: "day_outside_dates" });
     expect(applyDraftPatch(outing, { addTransports: [{ mode: "train" }] })).toEqual({ status: "invalid", code: "transport_day_missing" });
+  });
+});
+
+describe("card-owned daily boundaries and tickets", () => {
+  const dates = { from: "2026-10-17", to: "2026-10-19" };
+  const manual = (draft: RequirementsDraft, patch: Parameters<typeof applyDraftPatch>[1]) => {
+    const updated = applyDraftPatch(draft, patch, candidates, { manualCard: true });
+    if (updated.status !== "ok") throw Error(updated.code);
+    return updated.draft;
+  };
+  it("keeps date-specific overrides while editing defaults and rejects silent chat edits", () => {
+    const date = "2026-10-18";
+    const dayBoundary = { date, start: { candidate: "c1" }, end: { candidate: "c2" }, endPolicy: "must" as const, startsAt: "10:30", endsAt: "24:00" };
+    const draft = manual(emptyOutingDraft(), { dates, dayBoundary });
+    const newer = manual(draft, { dailyWindow: { startsAt: "11:00", endsAt: "22:00" } });
+    expect(newer.outing?.dayBoundaries?.[date]).toMatchObject({ startsAt: "10:30", endsAt: "24:00", endPolicy: "must", end: { name: "合成湖滨商场" } });
+    expect(applyDraftPatch(newer, { dayBoundary: { date, reset: true } }).status).toBe("invalid");
+    expect(manual(newer, { dayBoundary: { date, reset: true } }).outing?.dayBoundaries?.[date]).toBeUndefined();
+  });
+
+  it("confirms an explicitly saved night train once, protects the ticket and checks conflicting times across dates", () => {
+    const ride = { day: 2, mode: "train" as const, from: { candidate: "c1" }, to: { candidate: "c2" }, departAt: "23:40", arriveAt: "07:10", arriveDay: "next" as const };
+    const draft = manual(emptyOutingDraft(), { dates, addTransports: [ride] });
+    expect(draft.outing?.transports[0]).toMatchObject({ overnightConfirmed: true, manualTicket: true });
+    expect(applyDraftPatch(draft, { updateTransports: [{ id: "t1", arriveAt: "07:20" }] }).status).toBe("invalid");
+    expect(applyDraftPatch(draft, { addTransports: [{ ...ride, day: 3, departAt: "00:15", arriveDay: "same" }] }, candidates).status).toBe("invalid");
+    expect(applyDraftPatch(emptyOutingDraft(), { dates, addTransports: [ride] }, candidates)).toMatchObject({ draft: { outing: { transports: [expect.not.objectContaining({ overnightConfirmed: true })] } } });
   });
 });

@@ -1,5 +1,6 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
+import { BrandMark } from "../_ui/brand";
 import { Reveal } from "../_ui/reveal";
 import { HomePreview } from "../home-preview";
 
@@ -10,15 +11,22 @@ import { HomePreview } from "../home-preview";
 export function AuthShell({ title, note, children }: { title: string; note: string; children: ReactNode }) {
   return (
     <div className="relative min-h-dvh overflow-hidden bg-paper">
-      <div
-        aria-hidden="true"
-        className="pointer-events-none absolute inset-x-0 top-0 h-[560px] bg-[radial-gradient(60%_60%_at_20%_0%,var(--color-lake-100),transparent_70%),radial-gradient(40%_50%_at_90%_10%,var(--color-sun-50),transparent_70%)]"
-      />
+      <div aria-hidden="true" className="pointer-events-none fixed inset-0 overflow-hidden">
+        <div className="morandi-drift absolute -left-24 -top-28 h-[480px] w-[540px] rounded-full bg-[#b9ced1]/55 blur-[95px]" />
+        <div className="morandi-drift-alt absolute -right-20 top-10 h-[420px] w-[480px] rounded-full bg-[#e3d3c6]/58 blur-[100px]" />
+        <div className="morandi-drift absolute bottom-0 left-1/3 h-[340px] w-[420px] rounded-full bg-[#c8d5ce]/42 blur-[110px]" />
+      </div>
       <div className="relative mx-auto flex min-h-dvh max-w-5xl flex-col px-4 sm:px-8">
         <header className="flex h-16 shrink-0 items-center">
           <Link href="/" className="flex items-center gap-2.5" aria-label="TripQuest">
-            <span className="grid size-9 place-items-center rounded-xl bg-lake-600 text-xs font-bold text-white">TQ</span>
+            <BrandMark size="md" />
             <span className="font-semibold tracking-tight">TripQuest</span>
+          </Link>
+          <Link
+            href="/demo"
+            className="glass-pill ml-auto inline-flex h-9 items-center rounded-full px-4 text-sm font-medium text-lake-700 transition-colors hover:bg-white/80 focus-visible:outline-2 focus-visible:outline-lake-600"
+          >
+            免登录体验
           </Link>
         </header>
 
@@ -42,7 +50,7 @@ export function AuthShell({ title, note, children }: { title: string; note: stri
           </section>
 
           <Reveal className="lg:hidden">
-            <p className="font-heading text-[28px] font-semibold leading-[1.25]">
+            <p className="text-[28px] font-semibold leading-[1.25] tracking-tight">
               说一句话，
               <br />
               排好要去的每一天
@@ -50,7 +58,7 @@ export function AuthShell({ title, note, children }: { title: string; note: stri
           </Reveal>
 
           <Reveal order={1} className="w-full">
-            <div className="mx-auto w-full max-w-[400px] rounded-[28px] border border-line bg-surface/90 p-6 shadow-float backdrop-blur-sm sm:p-8">
+            <div className="glass-card mx-auto w-full max-w-[400px] rounded-[28px] p-6 sm:p-8">
               <h1 className="text-2xl font-semibold tracking-tight">{title}</h1>
               <p className="mt-2 text-sm leading-6 text-ink-soft">{note}</p>
               {children}

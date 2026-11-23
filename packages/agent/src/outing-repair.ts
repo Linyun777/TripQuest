@@ -17,7 +17,7 @@ import {
   type ReviewScore,
 } from "./outing-review";
 import type { JudgeProblem, JudgeVerdict } from "./outing-judge";
-import { currentRun } from "./runs";
+import { currentRun, timedTool, withRepair } from "./runs";
 
 /**
  * V4.0 审查-修复（stages/V4.0.md）：一条修改放到一份副本上（输入和分配），再把受影响的天重排。用户采纳建议时卡片
@@ -610,7 +610,13 @@ export async function runRepair(
       try {
         // 请求自己不理会取消时也按时停（60 秒是整趟审查的上限）。
         reply = await Promise.race([
-          request(REPAIR_SYSTEM_PROMPT, feedback ? `${content}\n\nYour last answer: ${feedback}` : content, deadline),
+          withRepair("decision", feedback ? "invalid_action" : null, () =>
+            request(
+              REPAIR_SYSTEM_PROMPT,
+              feedback ? `${content}\n\nYour last answer: ${feedback}` : content,
+              deadline,
+            ),
+          ),
           new Promise<never>((_, reject) => {
             if (deadline.aborted) reject(new Error("aborted"));
             deadline.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
@@ -629,7 +635,7 @@ export async function runRepair(
         feedback = `not accepted (${issues.join("; ")}); return exactly one action as JSON with only the fields described`;
         tried.push({ step: state.step, action: "unreadable", result: "invalid", why: feedback });
         const keys = reply.decision && typeof reply.decision === "object" ? Object.keys(reply.decision).slice(0, 8) : [typeof reply.decision];
-        run?.step("repair", "invalid", { issues, keys });
+        run?.step("check", "invalid", { issues, keys });
         return { step: state.step + 1 };
       }
       if (!(listed && listed.length > 1)) feedback = null;
@@ -690,7 +696,19 @@ export async function runRepair(
       const named = fixes(fix, also).flatMap(itemOfFix);
       const aimed = ("target" in action && action.target ? open.get(action.target) : undefined)
         ?? [...open.values()].find((problem) => problem.items.some((item) => named.includes(item)));
-      const outcome = await tryFix(plan, version, id, fix, { ...context, signal: deadline }, also, !!aimed).catch(() => null);
+      const outcome = await withRepair(action.action, "trial_change", async () => {
+        const result = await timedTool("trial_plan", () =>
+          tryFix(plan, version, id, fix, { ...context, signal: deadline }, also, !!aimed),
+        ).catch(() => null);
+        if (!result || "rejected" in result) return result;
+        let trial = result.trial;
+        if (aimed && trial.planned && context.judgement && rechecks < JUDGE_RECHECKS) {
+          const verdict = await context.judgement.recheck(aimed, plan, trial.plan, trial.affected).catch(() => null);
+          if (verdict?.asked) rechecks += 1;
+          if (verdict) trial = { ...trial, verdict: { resolved: verdict.resolved, newProblem: verdict.newProblem, target: aimed.id } };
+        }
+        return { ...result, trial };
+      });
       if (!outcome) {
         trials += 1;
         tried.push({ step, change, result: "failed", why: "planning the affected days failed; the plan is unchanged" });
@@ -703,12 +721,7 @@ export async function runRepair(
         return { step: step + 1 };
       }
       trials += 1;
-      let trial = outcome.trial;
-      if (aimed && trial.planned && context.judgement && rechecks < JUDGE_RECHECKS) {
-        const verdict = await context.judgement.recheck(aimed, plan, trial.plan, trial.affected).catch(() => null);
-        if (verdict?.asked) rechecks += 1;
-        if (verdict) trial = { ...trial, verdict: { resolved: verdict.resolved, newProblem: verdict.newProblem, target: aimed.id } };
-      }
+      const trial = outcome.trial;
       byId.set(trial.id, trial);
       tried.push({
         // canKeep / canSuggest 由代码按留下、建议的检查算好（R04：不自驾分数没变好，模型就不知道它可以建议）。

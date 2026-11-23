@@ -10,6 +10,7 @@ import {
   integer,
   json,
   jsonb,
+  numeric,
   pgTable,
   primaryKey,
   text,
@@ -158,6 +159,15 @@ export const usageEvents = pgTable(
     createdAt: timestampWithTimeZone("created_at").notNull(),
     /** V3.0：发这次请求的根运行（agent_runs.id）。运行记录在请求结束时才写入，所以不设外键。 */
     runId: uuid("run_id"),
+    childRunId: uuid("child_run_id"),
+    meterStatus: text("meter_status"),
+    provider: text("provider"),
+    requestedModel: text("requested_model"),
+    returnedModel: text("returned_model"),
+    tokens: jsonb("tokens"),
+    price: jsonb("price"),
+    currency: text("currency"),
+    amount: numeric("amount"),
   },
   (table) => [
     check("usage_events_category_check", sql`${table.category} in ('amap', 'model', 'web', 'embed', 'jev')`),
@@ -180,6 +190,20 @@ export const usageLimits = pgTable(
     primaryKey({ columns: [table.userId, table.category] }),
     check("usage_limits_category_check", sql`${table.category} in ('amap', 'model', 'web', 'embed', 'jev')`),
     check("usage_limits_daily_check", sql`${table.dailyLimit} between 0 and 100000`),
+  ],
+);
+
+/** 站长在观测页动态调整的全站每日上限（没有记录时回退到环境变量或代码缺省）。 */
+export const siteUsageLimits = pgTable(
+  "site_usage_limits",
+  {
+    category: text("category").primaryKey(),
+    dailyLimit: integer("daily_limit").notNull(),
+    updatedAt: timestampWithTimeZone("updated_at").notNull().defaultNow(),
+  },
+  (table) => [
+    check("site_usage_limits_category_check", sql`${table.category} in ('amap', 'model', 'web', 'embed', 'jev')`),
+    check("site_usage_limits_daily_check", sql`${table.dailyLimit} between 0 and 100000`),
   ],
 );
 
@@ -935,6 +959,45 @@ export const conversationJobs = pgTable(
   ],
 );
 
+/** 受邀用户提交的产品反馈（随账号删除级联清理；仅记录页面路径与简短上下文，不保存坐标或定位）。 */
+export const userFeedback = pgTable(
+  "user_feedback",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: ownerId(),
+    category: text("category").notNull(),
+    content: text("content").notNull(),
+    pagePath: text("page_path"),
+    contextLabel: text("context_label"),
+    conversationId: uuid("conversation_id"),
+    journeyId: uuid("journey_id"),
+    status: text("status").notNull().default("open"),
+    createdAt: timestampWithTimeZone("created_at").notNull().defaultNow(),
+    resolvedAt: timestampWithTimeZone("resolved_at"),
+  },
+  (table) => [
+    check(
+      "user_feedback_category_check",
+      sql`${table.category} in ('plan_issue', 'ui_bug', 'suggestion', 'other')`,
+    ),
+    check("user_feedback_status_check", sql`${table.status} in ('open', 'resolved')`),
+    check(
+      "user_feedback_content_check",
+      sql`char_length(btrim(${table.content})) between 1 and 1000`,
+    ),
+    check(
+      "user_feedback_page_path_check",
+      sql`${table.pagePath} is null or (left(${table.pagePath}, 1) = '/' and char_length(${table.pagePath}) <= 160)`,
+    ),
+    check(
+      "user_feedback_context_label_check",
+      sql`${table.contextLabel} is null or char_length(${table.contextLabel}) <= 80`,
+    ),
+    index("user_feedback_status_created_idx").on(table.status, table.createdAt),
+    index("user_feedback_user_created_idx").on(table.userId, table.createdAt),
+  ],
+);
+
 export const schema = {
   users,
   sessions,
@@ -944,6 +1007,8 @@ export const schema = {
   invites,
   usageEvents,
   usageLimits,
+  siteUsageLimits,
+  userFeedback,
   trips,
   dayPlanDetails,
   journeys,

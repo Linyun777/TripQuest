@@ -12,6 +12,7 @@ export default async function RegisterPage() {
   if (await sessionUser(await headers())) redirect("/");
   return (
     <AuthShell title="加入 TripQuest" note="用收到的邀请码注册。用户名和密码就是之后登录用的，不需要邮箱或手机号。">
+      <p className="mb-4 text-sm text-ink-soft">为了解规划是否正常、统计 API 用量，站长可查看任务阶段、耗时和调用费用。该视图不展示聊天内容和位置。</p>
       <AuthForm mode="register" />
     </AuthShell>
   );

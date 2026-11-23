@@ -1,0 +1,102 @@
+name: tripquest-production
+
+x-app: &app
+  image: ${TRIPQUEST_APP_IMAGE:?Set an explicit application image tag or digest}
+  env_file: ${TRIPQUEST_ENV_FILE:?Set the absolute environment file path}
+  environment:
+    NODE_ENV: production
+  volumes:
+    - type: bind
+      source: ${TRIPQUEST_MODEL_PROFILE_FILE:?Set the model profile file path}
+      target: /app/agent-models.local.json
+      read_only: true
+      bind:
+        create_host_path: false
+  networks: [private]
+  logging: &logging
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: "3"
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg18@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+    mem_limit: 512m
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:?Set POSTGRES_DB}
+    volumes:
+      - postgres-data:/var/lib/postgresql
+    networks: [private]
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    logging: *logging
+
+  web:
+    <<: *app
+    mem_limit: 768m
+    restart: unless-stopped
+    stop_grace_period: 610s
+    depends_on:
+      postgres: { condition: service_healthy }
+    healthcheck:
+      test: [CMD, node, /app/deploy/dist/cli.js, health]
+      interval: 30s
+      timeout: 8s
+      start_period: 30s
+      retries: 3
+
+  worker:
+    <<: *app
+    mem_limit: 256m
+    profiles: [worker]
+    working_dir: /app
+    command: [node, apps/worker/dist/worker.js]
+    restart: unless-stopped
+    stop_grace_period: 610s
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  ops:
+    <<: *app
+    profiles: [tools]
+    working_dir: /app
+    entrypoint: [node, deploy/dist/cli.js]
+    command: [check]
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  proxy:
+    image: caddy:2.11.9-alpine@sha256:003a97808e781aa9f7e75cc2f43d34d461099031faf5e20faefb9f61126836f0
+    mem_limit: 96m
+    restart: unless-stopped
+    stop_grace_period: 610s
+    environment:
+      SITE_HOST: ${SITE_HOST:?Set the public hostname}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ${TRIPQUEST_DEPLOY_STATE_DIR:?Set the deployment state directory}:/srv/state:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks: [private]
+    depends_on:
+      web: { condition: service_healthy }
+    logging: *logging
+
+networks:
+  private:
+
+volumes:
+  postgres-data:
+  caddy-data:
+  caddy-config:

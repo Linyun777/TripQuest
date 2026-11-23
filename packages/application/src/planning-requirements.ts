@@ -70,13 +70,16 @@ export const planningTimeSchema = z
   .string()
   .regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/, "请输入 HH:mm 格式的同日时间");
 
+export const dayDeadlineSchema = z.union([planningTimeSchema, z.literal("24:00")]);
+export const endPolicySchema = z.enum(["last", "prefer", "must"]);
+
 const text = (max: number) => z.string().trim().min(1).max(max);
 
 const minuteOfDay = z.number().int().min(0).max(1439);
 /** 当天营业窗口只参与本次请求规划，附查询日期，不进入真实地点长期保存。 */
 export const placeHoursSchema = z.strictObject({
   date: z.iso.date(),
-  windows: z.array(z.strictObject({ startsAt: minuteOfDay, endsAt: minuteOfDay })).min(1).max(6),
+  windows: z.array(z.strictObject({ startsAt: minuteOfDay, endsAt: z.number().int().min(1).max(1440) })).min(1).max(6),
 });
 
 /**
@@ -165,8 +168,9 @@ export const planningRequirementsSchema = z
       .refine((date) => !date.startsWith("0000"), "年份必须大于 0"),
     window: z.strictObject({
       startsAt: planningTimeSchema,
-      endsAt: planningTimeSchema,
+      endsAt: dayDeadlineSchema,
     }),
+    endPolicy: endPolicySchema.optional(),
     startPlace: planningPlaceSchema,
     endPlace: planningPlaceSchema,
     interests: z.array(z.enum(PLANNING_INTERESTS)).max(4),
@@ -214,6 +218,7 @@ export const planningRequirementsSchema = z
     const fixed: { index: number; start: number; end: number }[] = [];
     let requiredCount = 0;
     let requiredMinutes = 0;
+    let openStay = 0;
     for (const [index, visit] of value.visits.entries()) {
       const key = planningPlaceKey(visit.place);
       if (seen.has(key))
@@ -222,7 +227,13 @@ export const planningRequirementsSchema = z
       if (visit.role !== "optional") requiredCount += 1;
       if (visit.role !== "fixed") {
         // V2.11：估计的停留排不下时可以缩短，这里按能缩到的下限算。
-        if (visit.role === "required") requiredMinutes += estimatedFloor(visit) ?? visit.stayMinutes;
+        if (visit.role === "required") {
+          const duration = estimatedFloor(visit) ?? visit.stayMinutes;
+          requiredMinutes += duration;
+          if (visit.staySource === "estimate" && (value.endPolicy === "last" || value.endPolicy === "prefer")) {
+            openStay = Math.max(openStay, duration);
+          }
+        }
         continue;
       }
       const from = minutes(visit.startsAt);
@@ -250,7 +261,7 @@ export const planningRequirementsSchema = z
         );
       }
     }
-    if (end > start && requiredMinutes > end - start) {
+    if (end > start && requiredMinutes - openStay > end - start) {
       issue(["visits"], "必去预计停留与固定事项占用时间已超过出行窗口");
     }
   });

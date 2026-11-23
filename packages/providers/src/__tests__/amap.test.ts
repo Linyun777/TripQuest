@@ -18,6 +18,26 @@ const make = (body: unknown, status = 200, headers = {}) => {
 const path = (duration: unknown = "61", distance: unknown = "80") => success({ route: { paths: [{ distance, cost: { duration } }] } });
 
 describe("V2.4 business facts for candidates", () => {
+  it("supplies a viewport for the map picker without adding coordinates to a stored city reference", async () => {
+    const { provider } = make(success({ districts: [{ adcode: "330100", name: "合成市", level: "city", center: "120,30" }] }));
+    expect(await provider.resolveMapCity("330100")).toMatchObject({ status: "ok", data: { name: "合成市", center: { longitude: 120, latitude: 30 } } });
+    const city = await provider.resolveCity("330100");
+    expect(city.status === "ok" && city.data).toEqual({ name: "合成市", adcode: "330100" });
+  });
+
+  it("uses a map click directly for reverse geocoding and never applies the device GPS conversion", async () => {
+    const { provider, fetcher } = make(success({ regeocode: {
+      addressComponent: { adcode: "330106", city: "合成市" },
+      pois: [{ id: "SYNTHETIC-CLICK", name: "合成公园", location: "120,30", distance: "3", type: "风景名胜" }],
+    } }));
+    const picked = await provider.nearestPlace({ longitude: 120, latitude: 30, coordinateSystem: "gcj02" });
+    expect(picked).toMatchObject({ status: "ok", data: { place: { ref: { externalId: "SYNTHETIC-CLICK" } } } });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    const url = new URL(String(fetcher.mock.calls[0][0]));
+    expect(url.pathname).toBe("/v3/geocode/regeo");
+    expect(url.searchParams.get("location")).toBe("120.000000,30.000000");
+  });
+
   it("asks for business facts only when requested, keeps the few we show, and drops the rest", async () => {
     const business = { rating: "4.6", cost: "120.00", keytag: "火锅", opentime_today: "10:00-21:00", tel: "0571-00000000", tag: "双人餐" };
     const asked = make(success({ count: "1", pois: [{ ...poi(), business }] }));

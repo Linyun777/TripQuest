@@ -18,13 +18,13 @@ TripQuest 是一个面向国内自由行的 AI 旅行助手。把时间、地点
 | --- | --- | --- |
 | 一日规划 | “周六逛书院，下午看展，16 点的茶叙保留，别太赶。” | 可编辑需求卡、分段出行方式、带时间的方案与地点顺序 |
 | 现在出发 | “先喝杯咖啡，再去附近公园走走。” | 每一步提供候选，选好后围绕上一站找下一站 |
-| 多日出游 | “玩三天，两晚住同一家，第一天早上到、第三天晚上回。” | 日期与晚数确认、固定交通、每晚住处，以及分到各天的行程 |
+| 多日出游 | “玩三天，两晚住同一家，第一天早上到、第三天晚上回。” | 日期与晚数确认、跨夜固定交通、地图选起终点、逐日时段与分天行程 |
 | 途中调整 | “午饭晚了半小时，下午不看展了，换成喝咖啡。” | 原来与调整后的对照，保留已完成事项和固定安排 |
 | 旅行问答 | “苏堤和白堤各有什么故事？” | 结合资料库或联网查询的回答，附网页或段落出处 |
 
-此外，还支持邀请码注册、按用户隔离的数据、经确认保存的长期偏好、每日额度，以及长任务的刷新重连、停止和中断后继续。
+此外，还支持免登录演示页（`/demo`）、邀请码注册、按用户隔离的数据、经确认保存的长期偏好、每日与动态额度、站长费用与运行观测（`/ops`）、用户反馈、长任务的刷新重连与中断后继续，以及基于 Docker + Caddy 的单机生产部署（见 [部署指南](deploy/README.md)）。
 
-技术栈：**TypeScript · Next.js · React · Tailwind CSS · LangGraph.js · LangChain.js · Zod · PostgreSQL / pgvector · Drizzle · Better Auth · Vitest · pnpm**。
+技术栈：**TypeScript · Next.js · React · Tailwind CSS · LangGraph.js · LangChain.js · Zod · PostgreSQL / pgvector · Drizzle · Better Auth · Vitest · Docker · Caddy · pnpm**。
 
 ## 界面演示
 
@@ -154,7 +154,9 @@ pnpm dev
 
 ### 无外部密钥的演示
 
-默认关闭真实地图与模型调用。若要使用虚构地点生成演示草稿，在 `.env` 设置：
+启动 `pnpm dev` 后，无需登录即可直接访问 `/demo`：输入兴趣和时间窗，在浏览器内使用虚构地点目录与同一套排程/校验逻辑体验对话追问、按兴趣选点、固定导览保护以及途中换站对比，全程零外部 API 调用。
+
+若要登录后使用数据库持久化的虚构规划草稿，在 `.env` 设置：
 
 ```dotenv
 PLANNING_PLACE_SOURCE=fixture
@@ -172,9 +174,9 @@ pnpm eval:baseline
 pnpm eval:agent -- --mode scripted
 ```
 
-### 本机真实对话规划
+### 真实对话规划与生产部署
 
-真实地点与对话规划目前仅允许在 **development 的本机个人模式** 中启用。`pnpm build` 验证生产打包，生产运行不会开启这一模式。
+默认关闭真实地图与模型调用。开发环境通过 `TRIPQUEST_DEPLOYMENT_MODE=local` 与下方开关显式启用本机个人模式；受邀试用的生产部署需显式配置 `TRIPQUEST_DEPLOYMENT_MODE=invited`、真实密钥、模型 profile 与有限的 `MODEL_DAILY_LIMIT`，详见 [部署指南](deploy/README.md)（包含 Docker 镜像、Caddy HTTPS、只读健康检查、维护窗口发布及每日备份恢复）。启用配置不代表获得第三方数据服务商许可，也不开放公开注册。
 
 在自己的 `.env` 中配置：
 
@@ -230,5 +232,6 @@ pnpm test:evals
 | [packages/auth](packages/auth/README.md) | Better Auth、邀请码、账号与管理命令 |
 | [packages/rag](packages/rag/README.md) | 自写语料、切分、混合召回、重排与引用 |
 | [packages/evals](packages/evals/README.md) | 虚构世界、评测用例、评分与报告生成 |
+| [deploy](deploy/README.md) / `Dockerfile` / `scripts/deploy.mjs` | 单机生产镜像、Caddy HTTPS、健康检查、发布与备份恢复 |
 
 架构、关键取舍与推荐阅读顺序见 [工程导读](PROJECT_CONTEXT.md)。

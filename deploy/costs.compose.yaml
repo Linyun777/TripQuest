@@ -1,0 +1,11 @@
+x-cost-files: &cost-files
+  volumes:
+    - type: bind
+      source: ${TRIPQUEST_COST_CONFIG_DIR:?Set the private cost configuration directory}
+      target: /app/cost-config
+      read_only: true
+      bind:
+        create_host_path: false
+services:
+  web: *cost-files
+  ops: *cost-files

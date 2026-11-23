@@ -17,6 +17,7 @@ import {
   confirmRealDay,
   hydrateRealDay,
   storedRealDaySchema,
+  serializeRealDay, assertRealDayMatchesJourney,
   type InitialRealDayDraft,
   type RealDayRepository,
 } from "../real-day";
@@ -87,7 +88,7 @@ const selection = (item: PlaceSummary) => ({ place: item, evidence: evidence() }
  * `shortened`（V2.11 估计停留被缩短的那天）：博物馆的停留是卡片估计的 120 分钟，排程时像规划器那样缩到 90；
  * 公园是用户说的 60 分钟。
  */
-async function realSnapshot(modes: ("walking" | "transit")[] = [], shortened = false) {
+async function realSnapshot(modes: ("walking" | "transit")[] = [], shortened = false, terminal = false) {
   const requirements = planningRequirementsSchema.parse({
     schemaVersion: "planning-requirements.v1",
     cityAdcode: "330100",
@@ -99,7 +100,8 @@ async function realSnapshot(modes: ("walking" | "transit")[] = [], shortened = f
     endPlace: selection(WORLD[3]),
     interests: [],
     pace: "standard",
-    visits: shortened
+    ...(terminal ? { endPolicy: "last" } : {}),
+    visits: terminal ? [{ place: selection(WORLD[1]), role: "required", stayMinutes: 90, staySource: "estimate" }] : shortened
       ? [
         { place: selection(WORLD[1]), role: "required", stayMinutes: 120, staySource: "estimate" },
         { place: selection(WORLD[2]), role: "required", stayMinutes: 60 },
@@ -145,6 +147,7 @@ async function realSnapshot(modes: ("walking" | "transit")[] = [], shortened = f
     });
     routeEvidence.set(JSON.stringify([path[index - 1], path[index]]), reply.evidence);
   }
+  if (terminal) routes.push({ fromPlaceId: path[1], toPlaceId: path[1], status: "same_place_assumption" });
   const museum = problem.activities.find((item) => item.floor !== undefined);
   const stays = new Map(shortened && museum ? [[museum.activity.activityId, 90]] : []);
   const input = { ...problem.input, activities: withStays(problem.activities, stays).map((item) => item.activity) };
@@ -180,8 +183,8 @@ class MemoryRealDays implements RealDayRepository {
 let counter = 0;
 const ids = { next: () => `00000000-0000-4000-8000-${String(++counter).padStart(12, "0")}` };
 
-async function save(routes: MobilityProvider, repository = new MemoryRealDays(), modes: ("walking" | "transit")[] = [], shortened = false) {
-  const snapshot = await realSnapshot(modes, shortened);
+async function save(routes: MobilityProvider, repository = new MemoryRealDays(), modes: ("walking" | "transit")[] = [], shortened = false, terminal = false) {
+  const snapshot = await realSnapshot(modes, shortened, terminal);
   const result = await confirmRealDay({
     snapshot,
     draftFingerprint: dayDraftSemanticFingerprint(snapshot),
@@ -371,4 +374,22 @@ describe("V2.2 real day with transit legs", () => {
     };
     expect((await save(bigger, new MemoryRealDays(), ["walking", "transit"])).result).toEqual({ status: "draft_changed" });
   });
+});
+
+
+it("saves an arrival-only day as a dated event and rechecks the actual inbound route", async () => {
+  const { provider, calls } = fakeAmap();
+  const { result, repository } = await save(provider, new MemoryRealDays(), [], false, true);
+  expect(result.status).toBe("saved");
+  const saved = repository.saved[0];
+  const document = serializeRealDay(saved.realDay);
+  expect(document.activities).toHaveLength(0);
+  expect(document).toMatchObject({ terminalArrival: { at: saved.realDay.activities[0].startsAt } });
+  expect(saved.currentPlan.activities).toHaveLength(0);
+  const reopened = storedRealDaySchema.parse(JSON.parse(JSON.stringify(document)));
+  expect(() => assertRealDayMatchesJourney(reopened, saved)).not.toThrow();
+  const before = calls.route;
+  const checked = await hydrateRealDay(reopened, { places: provider, routes: provider, nowMs: NOW + 2000 });
+  expect(checked).toMatchObject({ status: "checked", feasible: true });
+  expect(calls.route - before).toBe(1);
 });

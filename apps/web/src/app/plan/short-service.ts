@@ -192,8 +192,9 @@ export function createShortService(dependencies: ShortServiceDependencies) {
       window: { startsAt: draft.startsAt!, endsAt: draft.endsAt! },
       start: places.get(startId)!,
       city: draftCity(draft),
+      ...(draft.endPolicy ? { endPolicy: backId && draft.endPolicy === "last" ? "must" as const : draft.endPolicy } : {}),
       ...(backId ? { back: places.get(backId)! } : {}),
-      stops: picks.map((id) => ({ place: places.get(id)!, stayMinutes: stays.get(id) ?? 60 })),
+      stops: picks.map((id) => ({ place: places.get(id)!, stayMinutes: stays.get(id) ?? 60, estimated: !!draft.endPolicy })),
       travel: draft.travel ?? DEFAULT_TRAVEL,
       provider,
       now,
@@ -203,7 +204,7 @@ export function createShortService(dependencies: ShortServiceDependencies) {
     const messages: NewMessage[] = [];
     let event: Pick<Extract<PlanEvent, { type: "done" }>, "plan" | "mapStops" | "mapPaths" | "receipt"> = { plan: null, mapStops: [], mapPaths: [], receipt: null };
     if (result.status === "completed" && result.outcome === "draft" && snapshot) {
-      const done = await planOutcome({ result, snapshot, title: planTitle(draft), paths, environment: dependencies.environment(), nowMs: now() });
+      const done = await planOutcome({ cardVersion: { conversationId, fingerprint: input.fingerprint }, result, snapshot, title: planTitle(draft), paths, environment: dependencies.environment(), nowMs: now() });
       messages.push({ role: "assistant", kind: "plan_card", body: done.body });
       event = { plan: done.planView, mapStops: done.mapStops, mapPaths: done.mapPaths, receipt: done.receipt };
     } else {

@@ -1,3 +1,4 @@
+import { withRepair } from "./runs";
 import { z } from "zod";
 import {
   allocateByRules,
@@ -123,9 +124,6 @@ export function runOutingAllocator(input: OutingPlanInput, options: AllocateOpti
     { input },
     async (run) => {
       const result = await allocate(input, options);
-      for (const problems of result.attempts.slice(0, result.source === "model" ? result.repairs : result.attempts.length)) {
-        run?.step("repair", "allocation", { problems: problems.length });
-      }
       if (result.source === "rules" && result.modelRequests > 0) run?.step("fallback", "rules", { problems: result.problems.length });
       return result;
     },
@@ -140,7 +138,8 @@ async function allocate(input: OutingPlanInput, options: AllocateOptions): Promi
   const rules = (problems: readonly string[], repairs: number, modelRequests: number): AllocationResult => ({
     allocation: allocateByRules(input, frames), source: "rules", repairs, modelRequests, problems, attempts,
   });
-  if (!options.request || frames.length === 1) return rules([], 0, 0);
+  const request = options.request;
+  if (!request || frames.length === 1) return rules([], 0, 0);
   const context = JSON.stringify(allocationContext(input, frames, options.notes));
   let feedback: readonly string[] = [];
   let requests = 0;
@@ -148,11 +147,11 @@ async function allocate(input: OutingPlanInput, options: AllocateOptions): Promi
     let reply: ModelReply;
     try {
       requests += 1;
-      reply = await options.request(
+      reply = await withRepair("allocation", feedback.length ? "invalid_allocation" : null, () => request(
         ALLOCATE_SYSTEM_PROMPT,
         feedback.length ? `${context}\n\nYour last split had these problems; fix them:\n${feedback.map((item) => `- ${item}`).join("\n")}` : context,
         options.signal,
-      );
+      ));
     } catch {
       return rules(feedback, attempt, requests);
     }

@@ -1,3 +1,4 @@
+import { withRepair } from "./runs";
 import { z } from "zod";
 import { chinaDate, parseOpenToday } from "@tripquest/application/opening-hours";
 import { chooseLeg, straightMeters } from "@tripquest/application/leg-choice";
@@ -77,7 +78,10 @@ async function askModel<T>(
       const reply = await dayOperation({
         signal,
         timeoutMs: SHORT_LIMITS.modelMs,
-        operation: (inner) => model.decide({ ...context, feedback }, { signal: inner }),
+        operation: (inner) =>
+          withRepair("decision", feedback, () =>
+            model.decide({ ...context, feedback }, { signal: inner }),
+          ),
       });
       const parsed = schema.safeParse(reply.decision);
       feedback = parsed.success ? check(parsed.data) : `invalid_shape: ${parsed.error.issues[0]?.path.join(".") || "answer"}`;
@@ -178,7 +182,7 @@ export function createCandidateRunner(dependencies: {
   function run(step: CandidateStep, options: { signal: AbortSignal }): Promise<CandidateResult> {
     return inAgent(
       "short-picker",
-      { input: step },
+      { input: step, attributes: { modelMode: dependencies.model.mode } },
       async (agentRun) => {
         const result = await pick(step, options);
         if (result.status === "ok" && result.fallback) agentRun?.step("fallback", "nearby", {});

@@ -4,7 +4,7 @@ import { cn } from "./cn";
 export function Card({ className, ...props }: ComponentProps<"div">) {
   return (
     <div
-      className={cn("rounded-(--radius-card) border border-line bg-surface shadow-card", className)}
+      className={cn("glass-card rounded-(--radius-card)", className)}
       {...props}
     />
   );

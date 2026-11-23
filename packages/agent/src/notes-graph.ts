@@ -1,3 +1,4 @@
+import { withRepair } from "./runs";
 import { closedThatDay, isStale, NOTE_MAX_STOPS, noteEligible, noteQuery } from "@tripquest/application/trip-notes";
 import type { WebSearchResult } from "@tripquest/providers";
 import { z } from "zod";
@@ -42,7 +43,7 @@ export function createTripNotesRunner(dependencies: TripNotesDependencies) {
   return {
     run: (input: TripNotesInput, options: { signal: AbortSignal }) => inAgent(
       "trip-notes",
-      {},
+      { attributes: { modelMode: dependencies.model.mode } },
       () => runNotes(input, options, dependencies),
       (result) => result.status === "completed" ? { status: "ok" } : { status: "failed", outcome: result.code },
     ),
@@ -164,7 +165,11 @@ async function decide(
     };
     if (new TextEncoder().encode(JSON.stringify(context)).byteLength > NOTES_LIMITS.contextBytes) throw new NotesError("invalid_output");
     counts.model += 1;
-    const reply = await dependencies.model.decide(context, { signal: AbortSignal.any([signal, AbortSignal.timeout(NOTES_LIMITS.modelMs)]) });
+    const reply = await withRepair("decision", context.feedback?.code, () =>
+      dependencies.model.decide(context, {
+        signal: AbortSignal.any([signal, AbortSignal.timeout(NOTES_LIMITS.modelMs)]),
+      }),
+    );
     const reported = usageSchema.safeParse(reply.usage);
     if (reported.success) addUsage(reported.data);
     const parsed = notesOutputSchema.safeParse(reply.decision);

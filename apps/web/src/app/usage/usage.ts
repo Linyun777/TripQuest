@@ -14,7 +14,15 @@ import type {
   WebSearchRequest,
 } from "@tripquest/providers";
 import { AmapMobilityProvider, DeepSeekSearchProvider } from "@tripquest/providers/server";
-import { getSharedJourneyDatabase, UsageLedger, UsageUnavailableError, type JourneyDatabaseClient, type UsageCategory } from "@tripquest/db";
+import {
+  getSharedJourneyDatabase,
+  readPrices,
+  UsageLedger,
+  UsageLimitError,
+  UsageUnavailableError,
+  type JourneyDatabaseClient,
+  type UsageCategory,
+} from "@tripquest/db";
 import { KnowledgeStore, knowledgeBase, liveEmbedder, liveReranker, PRODUCT_RERANK_MODEL } from "@tripquest/rag";
 import { createRegexCascadeRouter, regexRouter, type IntentRouter } from "@tripquest/agent/intent";
 import { createDeepSeekIntentRouter } from "@tripquest/agent/intent-live";
@@ -23,7 +31,8 @@ import { jevIntentRouter } from "@tripquest/agent/intent-jev";
 import { createJevClientFromEnv } from "@tripquest/agent/jev";
 import { createJevPicker } from "@tripquest/agent/short-jev";
 import type { CandidatePicker } from "@tripquest/agent/short";
-import { RunBudgetError } from "@tripquest/agent/runs";
+import type { ModelReservation } from "@tripquest/agent/live";
+import { RunBudgetError, timedTool } from "@tripquest/agent/runs";
 import { runForUsage } from "../runs/runs";
 
 type KnowledgePool = JourneyDatabaseClient["pool"];
@@ -43,6 +52,7 @@ type PoolKinds = {
 type UsageKind<P extends UsagePool> = PoolKinds[P];
 
 export interface Usage {
+  model?(purpose: string): Promise<ModelReservation>;
   reserve<P extends UsagePool>(pool: P, kind: UsageKind<P>, purpose: string): Promise<void>;
 }
 
@@ -52,8 +62,36 @@ export interface Usage {
  */
 export function createUserUsage(userId: string, now: () => number = Date.now): Usage {
   return {
+    model: (purpose) => runForUsage(userId, purpose, async (run) => {
+      const ledger = new UsageLedger(getSharedJourneyDatabase().pool, userId, process.env, now, () => run.rootId);
+      let event: Awaited<ReturnType<UsageLedger["reserveEvent"]>>;
+      try {
+        event = await ledger.reserveEvent("model", "model", purpose, run.id);
+      } catch (error) {
+        if (error instanceof UsageLimitError) {
+          run.step("check", "quota", { code: error.scope === "site" ? "site_limit" : "user_limit" });
+        }
+        throw error;
+      }
+      return {
+        id: event.id,
+        settle: (receipt) => ledger.settleModel(
+          event,
+          receipt,
+          readPrices(process.env.MODEL_PRICE_FILE),
+          process.env.MODEL_BILLING_CHANNEL ?? "default",
+        ),
+      };
+    }),
     reserve: (pool, kind, purpose) => runForUsage(userId, purpose, async (run) => {
-      await new UsageLedger(getSharedJourneyDatabase().pool, userId, process.env, now, () => run.rootId).reserve(pool, kind, purpose);
+      try {
+        await new UsageLedger(getSharedJourneyDatabase().pool, userId, process.env, now, () => run.rootId).reserve(pool, kind, purpose);
+      } catch (error) {
+        if (error instanceof UsageLimitError) {
+          run.step("check", "quota", { code: error.scope === "site" ? "site_limit" : "user_limit" });
+        }
+        throw error;
+      }
       if (pool !== "model") run.spend(pool);
     }),
   };
@@ -63,10 +101,14 @@ export function createUserUsage(userId: string, now: () => number = Date.now): U
  * 模型请求之前的预留，给各个 Agent 的 beforeRequest 用：到上限照旧抛出（Agent 记成“今天的次数用完”）；账本暂时记不了时
  * 抛 unavailable() 给的错误（各 Agent 自己的“暂时出错”），不说成用完。
  */
-export function reserveModel(usage: Usage, purpose: string, unavailable: () => Error): () => Promise<void> {
+export function modelEvent(usage: Usage, purpose: string) {
+  return usage.model ? usage.model(purpose) : usage.reserve("model", "model", purpose);
+}
+
+export function reserveModel(usage: Usage, purpose: string, unavailable: () => Error): () => Promise<ModelReservation | void> {
   return async () => {
     try {
-      await usage.reserve("model", "model", purpose);
+      return await modelEvent(usage, purpose);
     } catch (error) {
       throw error instanceof UsageUnavailableError ? unavailable() : error;
     }
@@ -96,7 +138,9 @@ export function meteredAmap(options: {
   usage: Usage;
   purpose: string;
   now?: () => number;
-}): MobilityProvider & PlaceLookupProvider & WeatherProvider & NearbyPlaceProvider & CityResolver {
+}): MobilityProvider & PlaceLookupProvider & WeatherProvider & NearbyPlaceProvider & CityResolver & Pick<AmapMobilityProvider, "resolveMapCity"> & {
+  placeAtMapPoint: NearbyPlaceProvider["nearestPlace"];
+} {
   const now = options.now ?? Date.now;
   const amap = new AmapMobilityProvider({
     key: options.key,
@@ -122,7 +166,10 @@ export function meteredAmap(options: {
         },
     evidence: evidence(),
   });
-  const guarded = async <T>(kind: UsageKind<"amap">, call: () => Promise<T>) => {
+  const guarded = <T extends { status: string; failure?: { code: string } }>(
+    kind: UsageKind<"amap">,
+    call: () => Promise<T>,
+  ) => timedTool(`amap_${kind}`, async () => {
     try {
       await options.usage.reserve("amap", kind, options.purpose);
     } catch (error) {
@@ -130,12 +177,15 @@ export function meteredAmap(options: {
     }
     await paced();
     return call();
-  };
+  }, result => result.failure?.code);
   return {
     searchPlaces: (request: PlaceSearchRequest, call?: ProviderCallOptions) =>
       guarded("search", () => amap.searchPlaces(request, call)),
     // V2.10：城市名换成编码（行政区查询），按一次搜索记账。公交第一次查某个城市时，路线内部会多一次
     // 行政区查询换城市代码（之后缓存），记在这一次路线里。
+    resolveMapCity: (name, call) => guarded("search", () => amap.resolveMapCity(name, call)),
+    placeAtMapPoint: (point, call) =>
+      guarded("nearby", () => amap.nearestPlace({ ...point, coordinateSystem: "gcj02" }, call)),
     resolveCity: (name: string, call?: ProviderCallOptions) =>
       guarded("search", () => amap.resolveCity(name, call)),
     findRoutes: (request: RouteRequest, call?: ProviderCallOptions) =>
@@ -178,7 +228,9 @@ export function meteredWebSearch(options: { key: string; usage: Usage; purpose: 
           evidence: { provider: "deepseek-search", sourceKind: "live", attribution: "DeepSeek 联网搜索", retrievedAt: new Date(now()).toISOString() },
         };
       }
-      return search.searchWeb(request, call);
+      return timedTool("web_search", () => search.searchWeb(request, call), result =>
+        result.status === "failure" ? result.failure.code : undefined,
+      );
     },
   };
 }
@@ -196,12 +248,18 @@ export function meteredKnowledge(options: { environment: NodeJS.ProcessEnv; usag
       return false;
     }
   };
-  return knowledgeBase({
+  const knowledge = knowledgeBase({
     store: new KnowledgeStore(options.pool),
     embedder: liveEmbedder({ environment: options.environment }),
     reranker: liveReranker(PRODUCT_RERANK_MODEL, options.environment),
     reserve,
   });
+  return {
+    ask: (...args: Parameters<typeof knowledge.ask>) => timedTool(
+      "ask_knowledge", () => knowledge.ask(...args),
+      result => result.status === "failed" ? result.code : undefined,
+    ),
+  };
 }
 
 /**
@@ -226,7 +284,7 @@ export function meteredIntentRouter(options: {
     config: options.config,
     profileId: env.AGENT_MODEL_PROFILE ?? "",
     environment: env,
-    beforeRequest: () => options.usage.reserve("model", "model", "chat-route"),
+    beforeRequest: () => modelEvent(options.usage, "chat-route"),
   });
   if (choice === "deepseek") return deepseek();
   // V4.1 级联：正则拿不准的才问 DeepSeek（stages/V4.1.md §3.2）。

@@ -131,7 +131,7 @@ export function createOutingHandler(options: JobHandlerOptions = {}) {
 
 // V3.2：保存之后采纳审查建议也走改动流程（request 写成 adopt：哪条消息的第几条建议）。
 const adoptSchema = z.strictObject({ adopt: z.strictObject({ messageId: z.uuid(), index: z.number().int().min(0).max(11) }) });
-const outingChangeSchema = z.strictObject({ expectedCount: z.number().int().nonnegative(), request: z.union([outingChangeRequestSchema, adoptSchema]), requestKey });
+const outingChangeSchema = z.strictObject({ expectedCount: z.number().int().nonnegative(), request: z.union([outingChangeRequestSchema, adoptSchema, z.strictObject({ boundaries: z.literal(true) })]), requestKey });
 
 /**
  * POST /api/conversations/[id]/outing/change: V2.11 re-plans the days a cross-day change touches (the chat
@@ -211,7 +211,7 @@ export function createOutingChangeConfirmHandler(options: WithUser<PlanServiceOp
 
 const outingSaveSchema = z.strictObject({
   generationId: z.uuid(),
-  receipts: z.array(z.string().min(1).max(DRAFT_RECEIPT_BYTES)).min(1).max(OUTING_RECEIPTS),
+  receipts: z.array(z.string().min(1).max(DRAFT_RECEIPT_BYTES)).max(OUTING_RECEIPTS),
   acknowledgeUnknowns: z.boolean(),
 });
 const OUTING_SAVE_STATUS: Record<OutingSaveReply["status"], number> = {
@@ -255,6 +255,8 @@ const chooseSchema = z.strictObject({
   tripId: z.uuid(),
   messageId: z.uuid(),
   fingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+  // 页面共用流式规划入口，会带请求键；短途选点和换批不登记长任务。
+  requestKey,
   /** The picked place's Amap ID; absent = "换一批". */
   pick: z.string().regex(/^[A-Za-z0-9_-]{1,100}$/).optional(),
 });

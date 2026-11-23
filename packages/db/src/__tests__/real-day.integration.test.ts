@@ -9,6 +9,8 @@ import type { InitialRealDayDraft } from "@tripquest/application/real-day";
 import { createJourneyDatabase, type JourneyDatabaseClient } from "../connection";
 import { DrizzleJourneyRepository } from "../repository";
 import { requireSafeTestDatabaseUrl } from "../test-database-safety";
+import { DrizzleConversationRepository } from "../conversation-repository";
+import { fingerprint } from "@tripquest/application/fingerprint";
 import { ownerId } from "./test-users";
 
 config({ path: fileURLToPath(new URL("../../../../.env", import.meta.url)), quiet: true });
@@ -132,6 +134,52 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)("S5.5 real days on PostgreSQL", 
   afterAll(async () => {
     await client?.pool.query("DELETE FROM journeys");
     await client?.close();
+  });
+
+  it("refuses an earlier card after editing the start time and accepts the current version", async () => {
+    const cards = new DrizzleConversationRepository(client.database, await ownerId(client.pool));
+    const card = await cards.createConversation({ id: crypto.randomUUID(), title: "合成时间约束", now: new Date(at) });
+    try {
+      const seen = fingerprint(card.draft);
+      const edited = { ...card.draft, startsAt: "10:30" };
+      await cards.updateDraft({ conversationId: card.id, expectedFingerprint: seen, draft: edited, now: new Date(at) });
+      const save = (version: string) => repository.createRealDay({
+        ...realDraft(), cardVersion: { conversationId: card.id, fingerprint: version },
+      });
+      expect((await save(seen)).status).toBe("draft_changed");
+      expect(await repository.findCurrentJourney(ID.journey)).toBeNull();
+      expect((await save(fingerprint(edited))).status).toBe("saved");
+    } finally {
+      await client.pool.query("DELETE FROM conversations WHERE id = $1", [card.id]);
+    }
+  });
+
+  it("reopens and reports an arrival-only day with no interval rows", async () => {
+    const initial = realDraft();
+    const day = initial.realDay;
+    const event = day.activities[0];
+    const draft: InitialRealDayDraft = {
+      ...initial, currentPlan: { ...initial.currentPlan, activities: [] }, activitySnapshots: [],
+      realDay: {
+        ...day, context: { ...day.context, endPolicy: "last", endPlaceId: ID.museum },
+        activities: [{ ...event, endsAt: event.startsAt, openArrival: true,
+          record: { activity: { ...event.record.activity, staySource: "system_estimate" } } }],
+      },
+    };
+    expect((await repository.createRealDay(draft)).status).toBe("saved");
+    expect(await getJourney(ID.journey, repository)).toMatchObject({
+      status: "found", journey: { realDay: { activities: [{ openArrival: true, startsAt: 560 }] } },
+    });
+    const stored = await client.pool.query("SELECT details FROM day_plan_details WHERE journey_id = $1", [ID.journey]);
+    expect(stored.rows[0].details.terminalArrival).not.toHaveProperty("endsAt");
+    expect(stored.rows[0].details.activities).toHaveLength(0);
+    const report = await repository.commitRealDayProgress({ journeyId: ID.journey, recordedAt: at, command: {
+      reportId: "50000000-0000-4000-8000-0000000000ad", basePlanVersion: 1, baseObservationVersion: 0,
+      completedActivityIds: [ID.activity], skippedActivityIds: [], observedAt: "2026-10-16T10:55+08:00",
+      earliestResumeAt: "2026-10-16T11:00+08:00", location: { kind: "known", placeId: ID.museum }, noCurrentActivity: true,
+    } });
+    expect((await repository.findCurrentJourney(ID.journey))?.dayProgress?.completedActivityIds).toEqual([ID.activity]);
+    expect(report.status).not.toBe("invalid_report");
   });
 
   it("stores only the minimal record and reads it back as a real day", async () => {

@@ -13,10 +13,9 @@ export function createDayLiveModel(options: LiveModelOptions): DayPlanningDecisi
       if (signal.aborted) throw new DayRunError("timeout");
 
       // Keep the caller's budget error outside SDK connection-error wrapping.
-      await beforeRequest?.();
-      if (signal.aborted) throw new DayRunError("timeout");
+      const receipt = await beforeRequest?.();
 
-      return transport.request(DAY_SYSTEM_PROMPT, content, signal);
+      return transport.request(DAY_SYSTEM_PROMPT, content, signal, receipt);
     },
   };
 }

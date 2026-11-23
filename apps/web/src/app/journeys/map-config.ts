@@ -1,4 +1,5 @@
 import "server-only";
+import { permitsRealPlanning } from "../deployment/environment";
 import { withUser, type UserResolver } from "../auth/session";
 
 export type PlanningMapConfig =
@@ -9,7 +10,7 @@ export function readPlanningMapConfig(
   environment: NodeJS.ProcessEnv = process.env,
 ): PlanningMapConfig {
   if (
-    environment.NODE_ENV !== "development" ||
+    !permitsRealPlanning(environment) ||
     environment.PLANNING_MAP_MODE !== "amap" ||
     !environment.AMAP_JS_API_KEY?.trim() ||
     !environment.AMAP_JS_SECURITY_CODE?.trim()

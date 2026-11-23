@@ -408,7 +408,7 @@ function Track({ state, view, estimate, live, notes }: {
           >
             {here && <NowMarker label={liveLabel ?? estimate.label} />}
             <TrackNode
-              time={`${tripClock(stop.startsAt)}–${tripClock(stop.endsAt)}`}
+              time={stop.openArrival ? tripClock(stop.startsAt) + " 到达 · 自由活动" : `${tripClock(stop.startsAt)}–${tripClock(stop.endsAt)}`}
               name={stop.name}
               label={STATE_TEXT[stateOf] ?? (stop.fixed ? "预约" : undefined)}
               dot={DOT[stateOf]}
@@ -649,7 +649,7 @@ function drawProgress(api: AmapApi, map: AmapInstance, model: ReturnType<typeof 
   const you = youPoint(model);
   const walked = you ? [...points.slice(0, model.walked + 1), you] : points.slice(0, model.walked + 1);
   const ahead = you ? [you, ...points.slice(model.walked + 1)] : points.slice(model.walked);
-  if (walked.length > 1) overlays.push(new api.Polyline({ path: walked, strokeColor: "#1f7159", strokeWeight: 5, strokeStyle: "solid" }));
+  if (walked.length > 1) overlays.push(new api.Polyline({ path: walked, strokeColor: "#547478", strokeWeight: 5, strokeStyle: "solid" }));
   if (ahead.length > 1) overlays.push(new api.Polyline({ path: ahead, strokeColor: "#2f8a6f", strokeWeight: 3, strokeStyle: "dashed" }));
   const chip = (node: Node, label: string) => {
     const element = document.createElement("span");

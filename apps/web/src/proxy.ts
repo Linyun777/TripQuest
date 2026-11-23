@@ -5,7 +5,7 @@ import { getSessionCookie } from "@tripquest/auth/cookies";
  * V2.12（stages/V2.12.md §3.3）：页面没有会话 cookie 就去登录页。这里只是乐观的跳转（Next 文档要求 proxy
  * 不做完整的会话检查）；真正的检查在每个接口和服务端页面里（app/auth/session.ts）。接口不在这里拦，由接口回 401。
  */
-const PUBLIC = ["/login", "/register"];
+const PUBLIC = ["/login", "/register", "/demo"];
 
 export function proxy(request: NextRequest) {
   const { pathname, search } = request.nextUrl;

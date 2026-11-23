@@ -16,6 +16,7 @@ export type OutingTripPart =
       readonly arriveAt: string;
       readonly nextDay: boolean;
       readonly estimated: boolean;
+      readonly estimateSide?: "arrival" | "departure";
     }
   | { readonly kind: "connect"; readonly from: string; readonly to: string; readonly departAt: string; readonly arriveAt: string };
 export type OutingTrip = {
@@ -85,6 +86,7 @@ export function OutingProgressHeader({
   onSelect: (day: number, journeyId: string | null) => void;
 }) {
   const selected = trip.days.find((item) => item.day === day) ?? trip.days[0]!;
+  const previousRide = trip.days.find((item) => item.day === selected.day - 1)?.parts.find((part) => part.kind === "transfer" && part.nextDay);
   const plans = selected.parts.filter((part): part is Extract<OutingTripPart, { kind: "plan" }> => part.kind === "plan");
   return (
     <div className="mb-4 space-y-3">
@@ -108,6 +110,7 @@ export function OutingProgressHeader({
           );
         })}
       </div>
+      {previousRide?.kind === "transfer" && <p className="text-sm">{previousRide.arriveAt} 到达{previousRide.to}（前一日车次）</p>}
       {selected.parts.some((part) => part.kind !== "plan") && (
         <ol className="space-y-1.5">
           {selected.parts.map((part, index) => {
@@ -157,7 +160,7 @@ function Ride({ ride, today, minute }: { ride: Extract<OutingTripPart, { kind: "
         {ride.departAt} {ride.from} → {ride.nextDay ? "次日 " : ""}{ride.arriveAt} {ride.to}
       </p>
       <p className="mt-0.5 text-xs text-ink-faint">
-        {ride.estimated ? "没填车次，时间是估计" : "车次由你填写"}
+        {ride.estimateSide === "arrival" ? "到站时间为估计" : ride.estimateSide === "departure" ? "发车时间为估计" : ride.estimated ? "车次时间为估计" : "车次由你填写"}
         {status && ` · ${status}`}
       </p>
     </li>

@@ -112,6 +112,8 @@ function dayInput(input: OutingInput, allocation: Allocation, frame: DayFrame, e
   return {
     date: frame.date,
     window: { startsAt: clock(frame.startsAt), endsAt: clock(Math.max(frame.startsAt, frame.endsAt)) },
+    endPolicy: frame.endPolicy, playFrom: frame.playFrom, postRideStart: frame.postRideStart,
+    explicitStart: frame.explicitStart, arrival: frame.arrival,
     start: frame.start,
     end: frame.end,
     transfers: frame.transfers.map((item) => item.transfer),
@@ -158,6 +160,10 @@ export async function planOutingDay(
   dependencies: OutingDependencies,
   options: Pick<OutingGenerateOptions, "signal" | "onProgress"> & { readonly retryWithoutPreferences?: boolean },
 ): Promise<GeneratedDay> {
+  if (frame.missingStart || frame.conflictingEnd) return {
+    day: frame.day, date: frame.date, frame, snapshots: new Map(), discovered: [],
+    result: { status: "no_plan", segment: 0, reason: "requirements", notes: [], explanation: frame.conflictingEnd ? "当天必须到达的终点与提前进站的车站冲突，请调整结束地点或车次。" : "前一晚住处未定，请在卡片上选择这一天的出发地点。" },
+  };
   const weatherByCity: Record<string, DayWeather> = {};
   for (const city of frame.cities) {
     const day = await dependencies.weather?.(frame.date, city).catch(() => undefined);

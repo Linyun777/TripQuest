@@ -1,3 +1,4 @@
+import { withRepair } from "./runs";
 import { z } from "zod";
 import { isOutdoorPlace } from "@tripquest/application/day-planning";
 import { checkAllocation, outingFrames, overfullDays, type Allocation } from "@tripquest/application/outing-allocation";
@@ -595,11 +596,11 @@ export async function proposeFixes(
     try {
       requests += 1;
       const problems = feedback.map((item) => `- ${item}`).join("\n");
-      reply = await request(
+      reply = await withRepair("review", feedback.length ? "invalid_review" : null, () => request(
         REVIEW_SYSTEM_PROMPT,
         feedback.length ? `${content}\n\nYour last answer had these problems; fix them:\n${problems}` : content,
         signal,
-      );
+      ));
     } catch {
       return { checked: last, requests, repairs: attempt };
     }

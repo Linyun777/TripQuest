@@ -1,6 +1,6 @@
 "use client";
 
-import { Bike, Bookmark, Car, CarTaxiFront, CloudLightning, Footprints, Info, RotateCcw, Sparkles, TrainFront } from "lucide-react";
+import { Bike, Bookmark, Car, CarTaxiFront, CloudLightning, Footprints, Info, RotateCcw, TrainFront } from "lucide-react";
 import { motion } from "motion/react";
 import Link from "next/link";
 import { Badge } from "../_ui/badge";
@@ -13,11 +13,11 @@ import { StopNotes, TripNotesBar, useTripNotes } from "./trip-notes";
 
 /** One look per mode, shared by the card, the timeline and the map legend. */
 export const MODE_STYLE: Record<TravelModeView, { label: string; icon: typeof Footprints; className: string; color: string }> = {
-  walking: { label: "步行", icon: Footprints, className: "text-ink-faint", color: "#7f8a84" },
-  transit: { label: "地铁/公交", icon: TrainFront, className: "text-lake-600", color: "#1f7159" },
-  taxi: { label: "打车", icon: CarTaxiFront, className: "text-sun-700", color: "#e07b39" },
-  bicycling: { label: "骑行", icon: Bike, className: "text-rain-500", color: "#4d78b8" },
-  driving: { label: "自驾", icon: Car, className: "text-ink-soft", color: "#4a5751" },
+  walking: { label: "步行", icon: Footprints, className: "text-ink-faint", color: "#8b9396" },
+  transit: { label: "地铁/公交", icon: TrainFront, className: "text-lake-600", color: "#547478" },
+  taxi: { label: "打车", icon: CarTaxiFront, className: "text-sun-700", color: "#c28d6b" },
+  bicycling: { label: "骑行", icon: Bike, className: "text-rain-500", color: "#6782a3" },
+  driving: { label: "自驾", icon: Car, className: "text-ink-soft", color: "#596265" },
 };
 
 
@@ -122,7 +122,16 @@ function FreeTime({ minutes }: { minutes: number }) {
 }
 
 /** Start → stops → end, with the walk before each stop; stops slide in one by one. */
-export function PlanTimeline({ plan, notes = null }: { plan: PlanCardView; notes?: TripNotesView | null }) {
+export function PlanTimeline({
+  plan,
+  notes = null,
+  sample = false,
+}: {
+  plan: Pick<PlanCardView, "departAt" | "startName" | "stops" | "travelBeforeEnd" | "arriveAt" | "endName" | "live">;
+  notes?: TripNotesView | null;
+  sample?: boolean;
+}) {
+  const showTravelTimes = plan.live || sample;
   return (
     <ol className="relative">
       <Endpoint time={plan.departAt} name={plan.startName} label="出发" />
@@ -134,14 +143,15 @@ export function PlanTimeline({ plan, notes = null }: { plan: PlanCardView; notes
           transition={{ delay: 0.08 * index, duration: 0.36, ease: EASE_OUT }}
         >
           {stop.freeBefore !== undefined && <FreeTime minutes={stop.freeBefore} />}
-          <Leg leg={stop.travelBefore} wait={stop.waitMinutes} known={plan.live} />
-          <Stop stop={stop} index={index} notes={notes?.stops[index]} />
+          <Leg leg={stop.travelBefore} wait={stop.waitMinutes} known={showTravelTimes} />
+          <Stop stop={stop} index={index} notes={notes?.stops[index]} showPlaceLinks={!sample} />
         </motion.li>
       ))}
+      {!plan.stops.at(-1)?.openArrival && <>
       <li>
-        <Leg leg={plan.travelBeforeEnd} wait={0} known={plan.live} />
+        <Leg leg={plan.travelBeforeEnd} wait={0} known={showTravelTimes} />
       </li>
-      <Endpoint time={plan.arriveAt} name={plan.endName} label="到达" />
+      <Endpoint time={plan.arriveAt} name={plan.endName} label="到达" /></>}
     </ol>
   );
 }
@@ -188,7 +198,17 @@ function Leg({ leg, wait, known = true }: { leg: LegView | null; wait: number; k
 }
 
 /** A plan card's notes come back in its stops' order. */
-function Stop({ stop, index, notes }: { stop: PlanStop; index: number; notes?: TripNotesView["stops"][number] }) {
+function Stop({
+  stop,
+  index,
+  notes,
+  showPlaceLinks,
+}: {
+  stop: PlanStop;
+  index: number;
+  notes?: TripNotesView["stops"][number];
+  showPlaceLinks: boolean;
+}) {
   const role = ROLE[stop.role];
   return (
     <div className="flex gap-3">
@@ -200,13 +220,10 @@ function Stop({ stop, index, notes }: { stop: PlanStop; index: number; notes?: T
         <div className="flex flex-wrap items-center gap-2">
           <p className="font-medium">{stop.name}</p>
           <Badge tone={role.tone}>{role.label}</Badge>
-          <span className="tabular text-xs text-ink-faint">{stop.startsAt}–{stop.endsAt}</span>
+          <span className="tabular text-xs text-ink-faint">{stop.openArrival ? stop.startsAt + " 到达 · 自由活动" : stop.startsAt + "–" + stop.endsAt}</span>
         </div>
         {stop.reason && (
-          <p className="mt-1 flex gap-1.5 text-sm text-ink-soft">
-            <Sparkles className="mt-0.5 size-3.5 shrink-0 text-sun-500" />
-            {stop.reason}
-          </p>
+          <p className="mt-1 text-sm text-ink-soft">{stop.reason}</p>
         )}
         {stop.alert && (
           <p className="mt-1.5 flex items-start gap-1.5 rounded-(--radius-field) bg-sun-50 px-2.5 py-1.5 text-xs font-medium text-sun-700">
@@ -214,7 +231,7 @@ function Stop({ stop, index, notes }: { stop: PlanStop; index: number; notes?: T
             {stop.alert}
           </p>
         )}
-        <PlatformLinks name={stop.name} className="mt-1.5" />
+        {showPlaceLinks && <PlatformLinks name={stop.name} className="mt-1.5" />}
         <StopNotes stop={notes} />
       </div>
     </div>

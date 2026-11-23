@@ -1,3 +1,4 @@
+import { modelEvent } from "../usage/usage";
 import "server-only";
 import { traced } from "../runs/runs";
 import { currentRun } from "@tripquest/agent/runs";
@@ -70,6 +71,7 @@ export type PlanEvent =
   | { type: "step"; step: ProgressStep }
   | {
       type: "done";
+      outcome?: "draft" | "no_plan" | "failed" | "cancelled";
       messageCount: number;
       messages: ChatMessageView[];
       plan: PlanCardView | null;
@@ -118,7 +120,7 @@ export function createPlanService(options: PlanServiceOptions = {}) {
       environment: env,
       beforeRequest: async () => {
         try {
-          await ledger.reserve("model", "model", "plan");
+          return await modelEvent(ledger, "plan");
         } catch (error) {
           // 到上限才是“今天的规划次数用完了”；账本暂时记不了按规划出错说（稍后再试）。
           throw new DayRunError(error instanceof UsageLimitError ? "live_budget" : "internal_error");
@@ -140,7 +142,7 @@ export function createPlanService(options: PlanServiceOptions = {}) {
       config,
       profileId: env.AGENT_MODEL_PROFILE ?? "",
       environment: env,
-      beforeRequest: () => ledger.reserve("model", "model", "plan"),
+      beforeRequest: () => modelEvent(ledger, "plan"),
     });
     const picker = meteredJevPicker({ environment: env, usage: ledger });
     return createCandidateRunner({ provider, model, ...(picker ? { picker } : {}) });
@@ -163,7 +165,7 @@ export function createPlanService(options: PlanServiceOptions = {}) {
       config,
       profileId: env.AGENT_MODEL_PROFILE ?? "",
       environment: env,
-      beforeRequest: () => ledger.reserve("model", "model", "outing-review"),
+      beforeRequest: () => modelEvent(ledger, "outing-review"),
     });
   }
   // V4.7：整体判断的请求（输出上限单独 2048），同样记在模型额度上。
@@ -176,7 +178,7 @@ export function createPlanService(options: PlanServiceOptions = {}) {
       config,
       profileId: env.AGENT_MODEL_PROFILE ?? "",
       environment: env,
-      beforeRequest: () => ledger.reserve("model", "model", "outing-judge"),
+      beforeRequest: () => modelEvent(ledger, "outing-judge"),
     });
   }
   const savedPreferences = async () =>
@@ -283,6 +285,7 @@ export function createPlanService(options: PlanServiceOptions = {}) {
     const ready = snapshot as DayDraftConfirmationSnapshot | null;
     if (result?.status === "completed" && result.outcome === "draft" && ready) {
       const done = await planOutcome({
+        cardVersion: { conversationId, fingerprint: expectedFingerprint },
         result, snapshot: ready, title: planTitle(draft), paths, environment: environment(), nowMs: now(),
         ...(draft.startsAt ? { usualStart: draft.startsAt } : {}),
       });
@@ -305,6 +308,7 @@ export function createPlanService(options: PlanServiceOptions = {}) {
     const fresh = reread?.messages.slice(found.conversation.messageCount) ?? [];
     emit({
       type: "done",
+      outcome,
       messageCount: appended.messageCount,
       messages: fresh.flatMap((message): ChatMessageView[] => {
         if (message.kind === "planning_progress") {
@@ -360,6 +364,7 @@ export async function planOutcome(input: {
   nowMs: number;
   /** V4.2：卡片上这天原来的开始（HH:MM）；为赶上早上的固定事项提前出门时方案上说明。 */
   usualStart?: string;
+  cardVersion?: { conversationId: string; fingerprint: string };
 }) {
   const { result, snapshot, title } = input;
   const places = new Map(snapshot.places.map((item) => [item.placeId, item.selection.place]));
@@ -367,7 +372,7 @@ export async function planOutcome(input: {
     const points = input.paths.get(`${leg.fromPlaceId}>${leg.toPlaceId}`);
     return points?.length ? [{ mode: leg.mode ?? "walking", points }] : [];
   });
-  const offer = await createDraftSaveOffer(snapshot, result, { environment: input.environment, now: input.nowMs });
+  const offer = await createDraftSaveOffer(snapshot, result, { environment: input.environment, now: input.nowMs, cardVersion: input.cardVersion });
   if (offer.status !== "available" && input.environment.NODE_ENV === "development") console.warn(`[plan] no save offer: ${offer.reason}`);
   return {
     planView: toPlanView(result.draft, title, input.usualStart),
@@ -386,7 +391,7 @@ type Built =
 /** 将需求卡转换成排程需求，每个已绑定地点都按 ID 实时补查，不能从持久数据恢复旧坐标。 */
 async function buildRequirements(draft: RequirementsDraft, amap: Amap, signal: AbortSignal, now: () => number): Promise<Built> {
   const bound = (place: RequirementsDraft["start"]) => (place?.status === "bound" ? place : null);
-  const named = [bound(draft.start)!, bound(draft.end)!, ...draft.visits.map((visit) => bound(visit.place)!)];
+  const named = [bound(draft.start)!, bound(draft.end ?? draft.start)!, ...draft.visits.map((visit) => bound(visit.place)!)];
   const ids = [...new Set(named.map((place) => place.externalId))];
   const found = new Map<string, PlaceSummary>();
   let retrievedAt = new Date(now()).toISOString();
@@ -421,7 +426,8 @@ async function buildRequirements(draft: RequirementsDraft, amap: Amap, signal: A
     date: draft.date,
     window: { startsAt: draft.startsAt, endsAt: draft.endsAt },
     startPlace: selection(bound(draft.start)!.externalId),
-    endPlace: selection(bound(draft.end)!.externalId),
+    endPlace: selection(bound(draft.end ?? draft.start)!.externalId),
+    ...(draft.endPolicy ? { endPolicy: draft.end ? draft.endPolicy === "last" ? "must" : draft.endPolicy : "last" } : {}),
     interests: [],
     ...(draft.interests.length ? { freeInterests: draft.interests } : {}),
     ...(draft.notes ? { notes: draft.notes } : {}),
@@ -444,7 +450,7 @@ async function buildRequirements(draft: RequirementsDraft, amap: Amap, signal: A
       })()),
   });
   // V4.2：早上的固定事项来不及过去时这天提前出门（stages/V4.2.md §3.1；卡片不变）。
-  return parsed.success ? { status: "ok", requirements: withEarlyStart(parsed.data), weather } : { status: "unavailable" };
+  return parsed.success ? { status: "ok", requirements: draft.manualBoundaries?.includes("startsAt") ? parsed.data : withEarlyStart(parsed.data), weather } : { status: "unavailable" };
 }
 
 function noPlanText(built: Built, result: DayPlanningResult | null): string {
@@ -453,7 +459,7 @@ function noPlanText(built: Built, result: DayPlanningResult | null): string {
   if (!result) return "规划服务暂时出错，请稍后再试。";
   if (result.status === "completed" && result.outcome === "no_plan") {
     return result.reason === "constraints_not_met"
-      ? "按现在的时间和预约排不开。可以放宽结束时间、减少想去的地方，或者把某个必去改成想去。"
+      ? result.explanation || "按现在的时间和预约排不开。可以放宽结束时间、减少想去的地方，或者把某个必去改成想去。"
       : result.reason === "no_suitable_places"
         ? "附近没找到合适的地方，可以换个说法描述兴趣，或者告诉我具体想去哪。"
         : "有些路线或信息查不到，暂时给不出可靠的安排，请稍后再试。";
@@ -499,6 +505,7 @@ function toPlanView(draft: DayDraft, title: string, usualStart?: string): PlanCa
     stops: draft.activities.map((activity, index) => ({
       key: activity.activityId,
       startsAt: clock(activity.startsAt),
+      openArrival: activity.openArrival,
       endsAt: clock(activity.endsAt),
       name: name(activity.placeId),
       role: activity.role,
@@ -522,7 +529,7 @@ function alertFor(draft: DayDraft, activityId: string): { alert?: string } {
 }
 
 function planNotes(draft: DayDraft, usualStart?: string): string[] {
-  const notes: string[] = [];
+  const notes = draft.assumptions.filter((item) => item.includes("返程自行安排"));
   // V4.2：比卡片上的开始早出门，是为了赶早上的固定事项。
   const departAt = draft.legs[0]?.departsAt;
   const fixed = draft.activities.find((activity) => activity.role === "fixed");
@@ -558,7 +565,7 @@ function toPlanBody(draft: DayDraft, title: string, places: ReadonlyMap<string, 
       externalId: externalId(activity.placeId),
       name: name(activity.placeId).slice(0, 80),
       startsAt: clock(activity.startsAt),
-      endsAt: clock(activity.endsAt),
+      ...(activity.openArrival ? { openArrival: true as const } : { endsAt: clock(activity.endsAt) }),
       role: activity.role,
       ...(activity.reason ? { reason: activity.reason } : {}),
     })),

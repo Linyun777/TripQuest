@@ -1,113 +1,140 @@
-import { CloudSun, Footprints, MessagesSquare, Route } from "lucide-react";
+import { CalendarDays, ChevronRight } from "lucide-react";
+import Link from "next/link";
 import { connection } from "next/server";
 import type { JourneySummary } from "@tripquest/application";
 import { DrizzleJourneyRepository, getSharedJourneyDatabase } from "@tripquest/db";
+import { AppShell } from "./_ui/app-shell";
 import { CityName } from "./_ui/city";
 import { ByMode, ModeScope } from "./_ui/mode";
-import { Reveal } from "./_ui/reveal";
+import { pageUser } from "./auth/session";
 import { HomePreview } from "./home-preview";
 import { HomeStart } from "./home-start";
-import { TripList } from "./trip-list";
-import { pageUser } from "./auth/session";
 
 export const runtime = "nodejs";
 
-async function readTrips(userId: string): Promise<readonly JourneySummary[] | null> {
+async function readRecentTrips(userId: string): Promise<readonly JourneySummary[] | null> {
   try {
-    return await new DrizzleJourneyRepository(getSharedJourneyDatabase().database, userId).listJourneys(12);
+    return await new DrizzleJourneyRepository(
+      getSharedJourneyDatabase().database,
+      userId,
+    ).listJourneys(12);
   } catch {
     return null;
   }
 }
 
-const POINTS = [
-  { icon: MessagesSquare, title: "说一句话就行", text: "不用一个个选地点，想法、预约和兴趣直接说。" },
-  { icon: Route, title: "走得通才给你", text: "每段路都向高德核对，近的步行、远的坐地铁或打车，固定预约不会迟到。" },
-  { icon: CloudSun, title: "看天气安排", text: "下雨优先室内，推荐的每个地方都说明理由。" },
-];
+function summarizeTrips(trips: readonly JourneySummary[]) {
+  const seenOutings = new Set<string>();
+  const items: { id: string; title: string; date: string; href: string; isOuting: boolean }[] = [];
+  for (const trip of trips) {
+    if (trip.trip) {
+      if (seenOutings.has(trip.trip.id)) continue;
+      seenOutings.add(trip.trip.id);
+      items.push({
+        id: trip.trip.id,
+        title: trip.trip.title,
+        date: `${trip.trip.firstDate} 起`,
+        href: "/trips",
+        isOuting: true,
+      });
+    } else {
+      items.push({
+        id: trip.id,
+        title: trip.title,
+        date: trip.date,
+        href: `/journeys/${trip.id}`,
+        isOuting: false,
+      });
+    }
+  }
+  return items;
+}
 
 export default async function Home() {
   await connection();
   const user = await pageUser("/");
-  const trips = await readTrips(user.id);
-  return (
-    <ModeScope className="min-h-dvh">
-      <div
-        aria-hidden="true"
-        className="pointer-events-none absolute inset-x-0 top-0 h-[520px] bg-[radial-gradient(60%_60%_at_20%_0%,var(--color-lake-100),transparent_70%),radial-gradient(40%_50%_at_90%_10%,var(--color-sun-50),transparent_70%)]"
-      />
-      <div className="relative mx-auto max-w-5xl px-4 sm:px-8">
-        <header className="flex h-16 items-center justify-between">
-          <span className="flex items-center gap-2.5">
-            <span className="grid size-9 place-items-center rounded-xl bg-lake-600 text-xs font-bold text-white">TQ</span>
-            <span className="font-semibold tracking-tight">TripQuest</span>
-          </span>
-          <span className="flex items-center gap-1">
-            <a href="/preferences" className="rounded-full px-3 py-1.5 text-sm text-ink-soft hover:bg-sunken hover:text-ink">
-              我的偏好
-            </a>
-            <a href="#trips" className="rounded-full px-3 py-1.5 text-sm text-ink-soft hover:bg-sunken hover:text-ink">
-              我的行程
-            </a>
-            <a href="/account" className="rounded-full px-3 py-1.5 text-sm text-ink-soft hover:bg-sunken hover:text-ink">
-              {user.displayUsername}
-            </a>
-          </span>
-        </header>
+  const trips = await readRecentTrips(user.id);
+  const recent = trips ? summarizeTrips(trips) : [];
 
-        <section className="grid items-center gap-12 pb-16 pt-12 sm:pt-20 lg:grid-cols-[minmax(0,1fr)_340px]">
-          <div>
-            <Reveal>
-              <p className="inline-flex items-center gap-1.5 rounded-full bg-surface/80 px-3 py-1 text-sm text-lake-700 shadow-card">
-                <Footprints className="size-3.5" />
-                <ByMode daily={<><CityName /> · 一日行程助手</>} outing="出游 · 1–7 天，可以跨城市" />
-              </p>
-            </Reveal>
-            <Reveal order={1}>
-              <h1 className="mt-5 max-w-2xl text-[40px] font-semibold leading-[1.15] tracking-tight sm:text-6xl">
+  return (
+    <ModeScope>
+      <AppShell active="plan" user={user} ambient={false}>
+        <main className="mx-auto max-w-5xl px-4 pt-6 sm:px-8 md:pt-14">
+          <section className="grid items-center gap-10 lg:grid-cols-[minmax(0,1fr)_356px] lg:gap-14">
+            <div className="min-w-0">
+              <h1 className="max-w-xl text-[32px] font-semibold leading-[1.18] text-ink sm:text-5xl">
                 说一句话，
                 <br />
-                <ByMode daily={<>排好<CityName />的一天</>} outing="排好几天的出游" />
-              </h1>
-            </Reveal>
-            <Reveal order={2}>
-              <p className="mt-5 max-w-xl text-base leading-8 text-ink-soft sm:text-lg">
                 <ByMode
-                  daily="告诉我时间、想去的地方和兴趣。我会搜索地点、按你的出行方式核对每段路线和天气，排出一天走得通的安排。"
-                  outing="告诉我哪几天、去哪些城市、怎么去，想玩什么。我会把地点分到各天，按高铁、航班的时间一天天排好，每段路线都核对过。"
+                  daily={
+                    <>
+                      排好<CityName />的一天
+                    </>
+                  }
+                  outing="排好几天的出游"
+                />
+              </h1>
+
+              <p className="mt-3 max-w-lg text-sm leading-6 text-ink-soft sm:mt-4 sm:text-base sm:leading-7">
+                <ByMode
+                  daily="告诉我出发时间、固定预约和想逛的方向，每段路线与天气实时核对，走得通才给你。"
+                  outing="告诉我日期、城市、高铁或航班与想玩的内容，按天分配并逐段核对交通与住处。"
                 />
               </p>
-            </Reveal>
-            <Reveal order={3} className="mt-8 max-w-2xl">
-              <HomeStart />
-            </Reveal>
-          </div>
-          <Reveal order={4} className="hidden lg:block">
-            <HomePreview />
-          </Reveal>
-        </section>
 
-        <section className="grid gap-3 pb-16 sm:grid-cols-3">
-          {POINTS.map((point, index) => (
-            <Reveal key={point.title} order={5 + index}>
-              <div className="h-full rounded-(--radius-card) border border-line bg-surface/70 p-5">
-                <point.icon className="size-5 text-lake-600" />
-                <p className="mt-3 font-medium">{point.title}</p>
-                <p className="mt-1 text-sm leading-6 text-ink-soft">{point.text}</p>
+              <div className="mt-6 max-w-2xl sm:mt-8">
+                <HomeStart />
               </div>
-            </Reveal>
-          ))}
-        </section>
 
-        <section id="trips" className="scroll-mt-6 pb-20">
-          <h2 className="mb-4 text-lg font-semibold">我的行程</h2>
-          <TripList trips={trips} />
-        </section>
+              {/* 精简最近行程快捷条：不再把长列表堆在首页，一键切到 /trips */}
+              {recent.length > 0 && (
+                <div className="mt-6 max-w-2xl sm:mt-8">
+                  <div className="flex items-center justify-between px-1 pb-2">
+                    <span className="text-xs font-medium text-ink-soft">最近保存</span>
+                    <Link
+                      href="/trips"
+                      className="inline-flex items-center gap-0.5 text-xs font-medium text-lake-700 hover:underline"
+                    >
+                      <span>全部 {recent.length} 个行程</span>
+                      <ChevronRight className="size-3.5" />
+                    </Link>
+                  </div>
+                  <div className="glass-card divide-y divide-ink/[0.06] overflow-hidden rounded-[22px]">
+                    {recent.slice(0, 2).map((item) => (
+                      <Link
+                        key={item.id}
+                        href={item.href}
+                        className="group flex items-center gap-3 px-4 py-3 transition-colors hover:bg-white/55 active:bg-white/75"
+                      >
+                        <span className="grid size-8 shrink-0 place-items-center rounded-xl bg-lake-50 text-lake-600">
+                          <CalendarDays className="size-4" />
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate text-sm font-medium text-ink">
+                            {item.title}
+                          </span>
+                          <span className="tabular block text-xs text-ink-faint">
+                            {item.date} · {item.isOuting ? "多日出游" : "一日行程"}
+                          </span>
+                        </span>
+                        <ChevronRight className="size-4 shrink-0 text-ink-faint transition-transform duration-150 group-hover:translate-x-0.5" />
+                      </Link>
+                    ))}
+                  </div>
+                </div>
+              )}
 
-        <footer className="border-t border-line py-6 text-xs text-ink-faint">
-          TripQuest · 地点与路线来自高德地图，营业、票务与预约请出发前确认。
-        </footer>
-      </div>
+              <p className="mt-6 text-xs text-ink-faint">
+                地点与路线来自高德地图，营业、票务与预约请出发前确认。
+              </p>
+            </div>
+
+            <div className="hidden lg:block">
+              <HomePreview />
+            </div>
+          </section>
+        </main>
+      </AppShell>
     </ModeScope>
   );
 }

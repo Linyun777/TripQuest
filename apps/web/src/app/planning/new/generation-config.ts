@@ -1,4 +1,5 @@
 import "server-only";
+import { permitsRealPlanning } from "../../deployment/environment";
 import type { GenerationAvailability } from "./contracts";
 import { readPlanningConfig, type PlanningConfig } from "./planning-config";
 import { readRealPlaceMode } from "../../real-places/real-mode";
@@ -32,7 +33,7 @@ export function readGenerationConfig(environment: NodeJS.ProcessEnv = process.en
   }
   const live = modelMode === "live";
   const amap = planning.source === "amap";
-  if ((amap || live) && environment.NODE_ENV !== "development") {
+  if ((amap || live) && !permitsRealPlanning(environment)) {
     return unavailable("当前环境不允许真实地点或模型生成。");
   }
   if (amap && environment.PLANNING_AMAP_GENERATION_ENABLED !== "true") {
@@ -41,6 +42,10 @@ export function readGenerationConfig(environment: NodeJS.ProcessEnv = process.en
   // Personal real mode (S5.5, D-051): Amap with rules or a live model, metered by the daily
   // local ledger instead of a one-off round; the user accepted the local-use risk (D-046).
   const personal = amap && readRealPlaceMode(environment).enabled;
+  // Production uses per-user/database accounting, never the old one-off lab ledger.
+  if (environment.NODE_ENV === "production" && (amap || live) && !personal) {
+    return unavailable("受邀部署需要完整的真实地点保存配置。");
+  }
   if (amap && live && !personal && environment.PLANNING_AMAP_MODEL_ENABLED !== "true") {
     return unavailable("真实地点用于模型规划的处理条件尚未确认。");
   }

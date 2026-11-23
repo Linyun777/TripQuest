@@ -133,7 +133,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)("V3.2 review suggestions through
     const split = await chat.allocate(created.id, fingerprint(draft)) as { card: { fingerprint: string } };
     const generated = await events((emit, signal) => plan.outing(created.id, { fingerprint: split.card.fingerprint }, emit as never, signal));
     const card = generated.find((event) => event.type === "card") as unknown as { card: { fingerprint: string; outing: { lodging: unknown[] } } };
-    expect(card.card.outing.lodging).toEqual([{ night: 1, place: { status: "bound", placeId: "DEMO-CAFE", name: "演示餐饮小馆" }, suggested: true }]);
+    expect(card.card.outing.lodging).toEqual([{ night: 1, place: { status: "bound", placeId: "DEMO-CAFE", name: "演示餐饮小馆", cityCode: "330100" }, suggested: true }]);
     const stored = (await conversations().findConversation(created.id))!.conversation.draft;
     expect(stored.outing!.lodging).toEqual([{ night: 1, place: { status: "bound", externalId: "DEMO-CAFE", name: "演示餐饮小馆", city: "330100" }, source: "suggested" }]);
     expect(card.card.fingerprint).toBe(fingerprint(stored));
